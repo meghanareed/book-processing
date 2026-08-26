@@ -165,12 +165,6 @@ by design.
 > just holds some stale spreadsheets. If you ever do push a real key, rotate it at
 > platform.openai.com rather than trying to scrub history.
 
-> **Note:** this stops *future* commits from carrying these files, but the old versions stay
-> in git history. Since no real API key was ever committed (`openai_api_key` is `""` in the
-> current version), that's harmless here — the history is just some stale spreadsheets.
-> If you ever do push a real key, rotate it at platform.openai.com rather than trying to
-> scrub history.
-
 ---
 
 ## Setting up on a computer
@@ -196,12 +190,46 @@ notepad launcher_config.json
 The data folders keep syncing through OneDrive, so `books_output.xlsx` and your screenshots
 are already there.
 
-## Day-to-day
+## Pulling updates
+
+Once cloned, this is the whole thing — two lines:
 
 ```powershell
 cd C:\Users\megha\book-tools
-git pull                       # pick up changes made on another machine
-# ...edit / run...
+git pull
+```
+
+`git pull` knows which repo and branch to fetch from because `git clone` recorded it, so
+there's nothing else to configure. Run it whenever you want the latest code.
+
+If it refuses with *"Your local changes would be overwritten"*, you've edited a file that
+also changed on GitHub. Check what's yours:
+
+```powershell
+git status
+```
+
+Then either keep your edits:
+
+```powershell
+git add -A
+git commit -m "What I changed"
+git pull            # merges the two sets of changes
+```
+
+or throw them away and take GitHub's version:
+
+```powershell
+git checkout -- .
+git pull
+```
+
+`git checkout -- .` is permanent — it discards uncommitted edits with no undo. Only use it
+when you're sure your local changes don't matter.
+
+## Pushing your own changes
+
+```powershell
 git add -A
 git commit -m "What changed"
 git push
