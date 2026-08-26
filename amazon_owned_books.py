@@ -95,8 +95,14 @@ def _close_log() -> None:
 # ---------------------------------------------------------------------------
 import json
 
-EXCEL_PATH  = Path(r"C:\Users\megha\OneDrive\Documents\Reading\books_output.xlsx")
-BOOKS_PY    = Path(r"C:\Users\megha\OneDrive\Documents\Reading\books.py")
+# SCRIPT_DIR holds the code (and launcher_config.json); DATA_DIR holds the
+# spreadsheets and logs.  They are the same folder in the old layout and
+# separate once the code is cloned out of OneDrive.
+SCRIPT_DIR  = Path(__file__).resolve().parent
+DATA_DIR    = Path(r"C:\Users\megha\OneDrive\Documents\Reading")
+
+EXCEL_PATH  = DATA_DIR / "books_output.xlsx"
+BOOKS_PY    = SCRIPT_DIR / "books.py"
 SHEET_NAME  = "All Books"
 
 AMAZON_LIBRARY_URL = (
@@ -105,7 +111,11 @@ AMAZON_LIBRARY_URL = (
 
 # Load settings from launcher config if available
 _launcher_config = {}
-_config_path = EXCEL_PATH.parent / "launcher_config.json"
+# book_launcher.py writes the config next to itself, so look there first.
+# Fall back to DATA_DIR for the old layout where code and data shared a folder.
+_config_path = SCRIPT_DIR / "launcher_config.json"
+if not _config_path.exists():
+    _config_path = DATA_DIR / "launcher_config.json"
 if _config_path.exists():
     try:
         _launcher_config = json.loads(_config_path.read_text(encoding="utf-8"))

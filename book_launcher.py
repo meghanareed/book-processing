@@ -22,7 +22,12 @@ from tkinter import filedialog, messagebox, ttk
 # --------------------------------------------------------------------------- #
 # Config
 # --------------------------------------------------------------------------- #
+# SCRIPT_DIR holds the code (and launcher_config.json); DATA_DIR holds the
+# spreadsheets and logs.  They are the same folder in the old layout and
+# separate once the code is cloned out of OneDrive.
 SCRIPT_DIR = Path(__file__).resolve().parent
+DATA_DIR = Path(r"C:\Users\megha\OneDrive\Documents\Reading")
+
 CONFIG_FILE = SCRIPT_DIR / "launcher_config.json"
 
 TOOLS = [
@@ -724,7 +729,11 @@ def build_ui(config: dict) -> tk.Tk:
         """Open the most recent log file from the logs/ subfolder."""
         import glob
 
-        logs_dir = SCRIPT_DIR / "logs"
+        # The scripts write logs beside the spreadsheets (DATA_DIR), not beside
+        # the code.  Fall back to SCRIPT_DIR for the old shared-folder layout.
+        logs_dir = DATA_DIR / "logs"
+        if not logs_dir.exists():
+            logs_dir = SCRIPT_DIR / "logs"
         amazon_pattern = str(logs_dir / "amazon_scrape_*.log")
         storygraph_pattern = str(logs_dir / "storygraph_*.log")
         reenrich_pattern = str(logs_dir / "reenrich_*.log")

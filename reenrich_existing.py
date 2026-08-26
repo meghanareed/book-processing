@@ -69,8 +69,15 @@ import pandas as pd
 # ---------------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------------
+# SCRIPT_DIR holds the code (and launcher_config.json); DATA_DIR holds the
+# spreadsheets and logs.  They are the same folder in the old layout and
+# separate once the code is cloned out of OneDrive.
 SCRIPT_DIR   = Path(__file__).resolve().parent
-EXCEL_PATH   = SCRIPT_DIR / "books_output.xlsx"
+DATA_DIR     = Path(r"C:\Users\megha\OneDrive\Documents\Reading")
+
+EXCEL_PATH   = DATA_DIR / "books_output.xlsx"
+if not EXCEL_PATH.exists():
+    EXCEL_PATH = SCRIPT_DIR / "books_output.xlsx"   # old layout: data beside the code
 BOOKS_PY     = SCRIPT_DIR / "books.py"
 SHEET_NAME   = "All Books"
 

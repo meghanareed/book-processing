@@ -17,13 +17,23 @@ def _is_browser_closed(e: Exception) -> bool:
     ])
 
 
-EXCEL_PATH = Path(r"C:\Users\megha\OneDrive\Documents\Reading\books_output.xlsx")
+# SCRIPT_DIR holds the code (and launcher_config.json); DATA_DIR holds the
+# spreadsheets and logs.  They are the same folder in the old layout and
+# separate once the code is cloned out of OneDrive.
+SCRIPT_DIR = Path(__file__).resolve().parent
+DATA_DIR = Path(r"C:\Users\megha\OneDrive\Documents\Reading")
+
+EXCEL_PATH = DATA_DIR / "books_output.xlsx"
 SHEET_NAME = "All Books"
 BASE_URL = "https://app.thestorygraph.com"
 
-# Load settings from launcher config if available
+# Load settings from launcher config if available.  book_launcher.py writes the
+# config next to itself, so look there first; fall back to DATA_DIR for the old
+# layout where code and data shared a folder.
 _launcher_config = {}
-_config_path = EXCEL_PATH.parent / "launcher_config.json"
+_config_path = SCRIPT_DIR / "launcher_config.json"
+if not _config_path.exists():
+    _config_path = DATA_DIR / "launcher_config.json"
 if _config_path.exists():
     try:
         _launcher_config = json.loads(_config_path.read_text(encoding="utf-8"))
@@ -656,7 +666,8 @@ def process_book(page, row: pd.Series) -> dict:
             result[STATUS_COL]    = "Skipped"
             result[NOTES_COL]     = "Already marked To Read"
             result[COMPLETED_COL] = "Yes"
-        elif click_to_read(page):            result[STATUS_COL]    = "Added"
+        elif click_to_read(page):
+            result[STATUS_COL]    = "Added"
             result[NOTES_COL]     = "Clicked To Read"
             result[COMPLETED_COL] = "Yes"
         else:
