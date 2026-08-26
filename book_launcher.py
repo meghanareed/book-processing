@@ -265,12 +265,15 @@ def open_selector() -> None:
 
 
 def open_folder() -> None:
+    # "Open Reading Folder" means the data folder (spreadsheets, logs), which is
+    # no longer where the code lives.  Fall back to SCRIPT_DIR if it's missing.
+    target = DATA_DIR if DATA_DIR.exists() else SCRIPT_DIR
     if sys.platform.startswith("win"):
-        os.startfile(SCRIPT_DIR)  # noqa: SIM115
+        os.startfile(target)  # noqa: SIM115
     elif sys.platform == "darwin":
-        subprocess.Popen(["open", str(SCRIPT_DIR)])
+        subprocess.Popen(["open", str(target)])
     else:
-        subprocess.Popen(["xdg-open", str(SCRIPT_DIR)])
+        subprocess.Popen(["xdg-open", str(target)])
 
 
 def apply_decisions(status_var: tk.StringVar, log_widget: tk.Text, config: dict) -> None:
