@@ -6,8 +6,18 @@ import pandas as pd
 from pathlib import Path
 import json
 
-EXCEL_PATH = Path(r"C:\Users\megha\OneDrive\Documents\Reading\books_output.xlsx")
-CONFIG_PATH = EXCEL_PATH.parent / "launcher_config.json"
+# SCRIPT_DIR holds the code (and launcher_config.json); DATA_DIR holds the
+# spreadsheets and logs.  They are the same folder in the old layout and
+# separate once the code is cloned out of OneDrive.
+SCRIPT_DIR = Path(__file__).resolve().parent
+DATA_DIR = Path(r"C:\Users\megha\OneDrive\Documents\Reading")
+
+EXCEL_PATH = DATA_DIR / "books_output.xlsx"
+
+# book_launcher.py writes the config next to itself, so look there first.
+CONFIG_PATH = SCRIPT_DIR / "launcher_config.json"
+if not CONFIG_PATH.exists():
+    CONFIG_PATH = DATA_DIR / "launcher_config.json"
 
 print("="*60)
 print("StoryGraph Processing Diagnostic")

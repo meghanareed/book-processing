@@ -86,26 +86,51 @@ The `.py` files find each other via `SCRIPT_DIR`, so they can all move together.
 keeps syncing through the tool that's actually good at it, and you get real version history
 and rollback on the code.
 
-### ⚠️ (b) One bug this split will expose
+### ✅ (b) Path mismatches — fixed
 
-`storygraph_to_read.py` line 26 loads the config from **next to the spreadsheet**:
+Every script now uses the same two constants:
+
+| Constant | Points at | Holds |
+|---|---|---|
+| `SCRIPT_DIR` | wherever the `.py` files live | code, `launcher_config.json` |
+| `DATA_DIR` | `...\OneDrive\Documents\Reading` | spreadsheets, `logs/` |
+
+Four places disagreed about this, all invisible today because code and data share a folder,
+and all of which would have broken the moment you cloned to `book-tools`:
+
+1. `storygraph_to_read.py`, `amazon_owned_books.py`, `storygraph_diagnostic.py` read
+   `launcher_config.json` from the **data** folder, but `book_launcher.py` writes it to the
+   **code** folder — your saved Settings would silently stop applying.
+2. `reenrich_existing.py` looked for `books_output.xlsx` **next to itself**, so
+   "Fill Missing Metadata" would fail to find your spreadsheet.
+3. `amazon_owned_books.py` loaded `books.py` from a hardcoded OneDrive path rather than
+   from its own folder, so it would import a stale copy of the code.
+4. The launcher's "View Latest Log" read `SCRIPT_DIR/logs`, but the scripts *write* logs to
+   `DATA_DIR/logs` — the button would report "no logs found".
+
+Each lookup tries the correct folder first and falls back to the old one, so this works
+**before and after** you move the code. Nothing breaks in the meantime.
+
+### 🐛 (b2) A syntax error that was blocking StoryGraph entirely
+
+`storygraph_to_read.py` had a broken line — a statement welded onto the `elif` above it:
 
 ```python
-_config_path = EXCEL_PATH.parent / "launcher_config.json"   # -> ...\Reading\
+elif click_to_read(page):            result[STATUS_COL]    = "Added"
+    result[NOTES_COL]     = "Clicked To Read"
 ```
 
-but `book_launcher.py` **writes** it to **next to the scripts** (`SCRIPT_DIR`). Today those
-are the same folder so it works by accident. Once you move the code out of `Reading`, the
-Settings you save in the GUI will silently stop reaching the StoryGraph script.
-
-Fix: point both at the same place. Easiest is to make `storygraph_to_read.py` read the
-config from its own directory:
+That's an `IndentationError`, meaning **the whole file failed to parse and "Push to
+StoryGraph" could not run at all** — it would have died before opening the browser. Looks
+like an editing accident at some point after the April run log was written. Now:
 
 ```python
-_config_path = Path(__file__).parent / "launcher_config.json"
+elif click_to_read(page):
+    result[STATUS_COL]    = "Added"
+    result[NOTES_COL]     = "Clicked To Read"
 ```
 
-Say the word and I'll make that change.
+All nine `.py` files now compile cleanly.
 
 ### ⚠️ (c) The hardcoded username
 
