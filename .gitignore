@@ -1,0 +1,69 @@
+# ============================================================
+#  Data — lives in your Reading / Gallery folders, not in git.
+#  These change on every run and would conflict on every sync.
+# ============================================================
+books_output.xlsx
+books_output.bak.xlsx
+books_output*.xlsx
+my-reading-log.xlsx
+storygraph_results.xlsx
+*.bak.xlsx
+~$*.xlsx
+
+_sync_log.csv
+_progress_all_books.csv
+_errors.csv
+
+# ============================================================
+#  Secrets — launcher_config.json holds your OpenAI API key.
+#  Commit launcher_config.example.json instead.
+# ============================================================
+launcher_config.json
+
+# ============================================================
+#  Logs & run output
+# ============================================================
+logs/
+*.log
+
+# ============================================================
+#  Selector decisions (transient download)
+# ============================================================
+book-selector-decisions*.json
+decisions*.json
+
+# ============================================================
+#  Screenshots
+# ============================================================
+screenshots/
+processed/
+skipped/
+*.png
+*.jpg
+*.jpeg
+*.webp
+*.bmp
+
+# ============================================================
+#  Python
+# ============================================================
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+
+# ============================================================
+#  Playwright browsers
+# ============================================================
+.playwright/
+ms-playwright/
+
+# ============================================================
+#  OS / editor
+# ============================================================
+Thumbs.db
+desktop.ini
+.DS_Store
+.vscode/
+.idea/

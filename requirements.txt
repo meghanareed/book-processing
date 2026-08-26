@@ -1,0 +1,17 @@
+# Book Tools dependencies
+#
+# Install with:  py -m pip install -r requirements.txt
+# Then:          py -m playwright install chromium
+#
+# (The launcher also pip-installs these per-button at runtime; this file
+#  lets you set up a new machine in one step instead.)
+
+openai        # books.py  — GPT vision call that reads titles off screenshots
+pandas        # all scripts — spreadsheet manipulation
+openpyxl      # all scripts — .xlsx read/write engine for pandas
+pillow        # books.py  — image loading/resizing before upload
+playwright    # amazon_owned_books.py, storygraph_to_read.py — browser automation
+requests      # books.py  — metadata / ASIN lookups
+
+# tkinter is used by book_launcher.py but ships with the python.org
+# Windows installer — it is not a pip package.
