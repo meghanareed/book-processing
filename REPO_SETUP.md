@@ -29,7 +29,9 @@ Plus the docs (`README.md`, `INSTALLATION.md`, `STORYGRAPH_TROUBLESHOOTING.md`) 
 three files added by this change (`.gitignore`, `requirements.txt`,
 `launcher_config.example.json`).
 
-### ❌ Should NOT be in the repo — these are data, not code (~2.5 MB)
+### ❌ Removed from the repo — these are data, not code (~2.5 MB)
+
+These have been untracked (`git rm --cached`); they remain on your disk.
 
 | File | Size | Why it must come out |
 |---|---|---|
@@ -114,21 +116,29 @@ worth doing only if you actually need it.
 
 ---
 
-## Cleaning up the data files already committed
+## Data files: already untracked
 
-Run this once, in the repo folder. It stops tracking them but **leaves your actual files on
-disk untouched** — `--cached` only touches the git index:
+All seven have been removed from git tracking with `git rm --cached`, which touches only the
+git index — **your actual files are untouched on disk.** When you pull this branch into your
+Reading folder, the spreadsheets, logs, and your `launcher_config.json` all stay exactly
+where they are; git just stops carrying them.
 
-```powershell
-git rm --cached books_output.xlsx books_output.bak.xlsx my-reading-log.xlsx
-git rm --cached storygraph_results.xlsx _sync_log.csv storygraph_20260429_200445.log
-git rm --cached launcher_config.json
-git commit -m "Stop tracking generated data files and config with secrets"
-git push
-```
+The `.gitignore` covers them plus future logs, screenshots, and decision exports, so they
+can't creep back in.
 
-The `.gitignore` in this commit already covers all of them, plus future logs, screenshots,
-and decision exports, so they won't creep back in.
+### One thing to know
+
+`apply_reading_log.py` does **not** create `books_output.xlsx` or `my-reading-log.xlsx` if
+they're missing — it prints `WARN: ... not found` and skips that half of the update
+(lines 124 and 222). So on a new machine, wait for OneDrive to finish syncing your Reading
+folder before running anything. A fresh `git clone` on its own won't give you those files,
+by design.
+
+> **Note:** this stops *future* commits from carrying these files, but the old versions stay
+> in git history — the repo won't shrink. Since no real API key was ever committed
+> (`openai_api_key` is `""` in the version that was pushed), that's harmless: the history
+> just holds some stale spreadsheets. If you ever do push a real key, rotate it at
+> platform.openai.com rather than trying to scrub history.
 
 > **Note:** this stops *future* commits from carrying these files, but the old versions stay
 > in git history. Since no real API key was ever committed (`openai_api_key` is `""` in the
