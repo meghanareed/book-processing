@@ -79,6 +79,12 @@ TITLE_MATCH_THRESHOLD = 0.60  # Lowered from 0.65 for better matching
 SKIP_IF_PROCESSED_WITHIN_DAYS = _cfg_days("skip_if_processed_within_days", 30)
 RETRY_FAILED_AFTER_DAYS       = _cfg_days("retry_failed_after_days", 30)
 
+# Saving rewrites every sheet and copies a backup, which on OneDrive costs far
+# longer than processing a book.  Doing that per book dominated the run, so
+# save in batches instead; progress is still flushed on exit, interrupt or
+# error, so at most this many books' results are at risk.
+SAVE_EVERY_N_BOOKS = max(1, _cfg_days("save_every_n_books", 25))
+
 # A real, reused browser profile rather than a blank one per run.  StoryGraph's
 # bot check hands out a clearance cookie; with a throwaway profile there is
 # nowhere to keep it, so every run starts the challenge from scratch.  Kept
@@ -994,6 +1000,9 @@ def process_book(page, row: pd.Series) -> dict:
     return result
 
 
+_OTHER_SHEETS_CACHE = None
+
+
 def save_excel(df_all: pd.DataFrame):
     """
     Write All Books sheet back while preserving all other sheets.
@@ -1001,13 +1010,20 @@ def save_excel(df_all: pd.DataFrame):
     left as 0kb if the write crashes or is interrupted.
     Also keeps a .bak of the last good save.
     """
+    global _OTHER_SHEETS_CACHE
     import shutil, tempfile, os
 
-    # Read all existing sheets
-    try:
-        all_sheets: dict = pd.read_excel(EXCEL_PATH, sheet_name=None)
-    except Exception:
-        all_sheets = {}
+    # The other sheets (Unique Books, Duplicate Summary, Needs Review) are not
+    # touched by this script, so read them once instead of re-reading the whole
+    # workbook on every save.
+    if _OTHER_SHEETS_CACHE is None:
+        try:
+            sheets = pd.read_excel(EXCEL_PATH, sheet_name=None)
+        except Exception:
+            sheets = {}
+        _OTHER_SHEETS_CACHE = {k: v for k, v in sheets.items() if k != SHEET_NAME}
+
+    all_sheets: dict = dict(_OTHER_SHEETS_CACHE)
     all_sheets[SHEET_NAME] = df_all
 
     # Write to a temp file in the same directory
@@ -1172,8 +1188,18 @@ def main():
             today = datetime.datetime.now().strftime("%Y-%m-%d")
             df_all.loc[mask, ADDED_DATE_COL] = today
 
-            save_excel(df_all)
+            if idx % SAVE_EVERY_N_BOOKS == 0:
+                save_excel(df_all)
+                log(f"    [SAVE] Progress written ({idx}/{total})")
             time.sleep(SLEEP_BETWEEN_BOOKS)
+
+        # Flush whatever the last batch left unsaved — this also covers the
+        # interrupt and browser-closed breaks above.
+        try:
+            save_excel(df_all)
+            log("    [SAVE] Final progress written")
+        except Exception as e:
+            log(f"    [SAVE] ERROR: could not write final progress: {e}")
 
         try:
             context.close()   # persistent context — this also writes the profile out

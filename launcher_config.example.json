@@ -35,7 +35,10 @@
 
     "_cooldown_comment": "Both in days; 0 disables. skip_if_processed_within_days is the blanket guard so running the tool twice in a month doesn't redo the same work. retry_failed_after_days is how long a failed attempt waits before becoming eligible again. Books that were added, or were already on your shelf, are never reprocessed regardless of these.",
     "skip_if_processed_within_days": 30,
-    "retry_failed_after_days": 30
+    "retry_failed_after_days": 30,
+
+    "_save_comment": "How many books to process between spreadsheet saves. Saving rewrites every sheet and copies a backup, which on OneDrive takes longer than processing a book. Progress is always flushed at the end of a run, on interrupt and on error, so at most this many books' results are ever at risk. Set to 1 for the old save-after-every-book behaviour.",
+    "save_every_n_books": 25
   },
 
   "reenrich": {
