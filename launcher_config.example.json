@@ -45,7 +45,10 @@
 
     "_username_comment": "Your StoryGraph username, used by Sync Read from StoryGraph to open your read shelf. Leave blank and it is discovered from the profile link after you log in.",
     "username": "meghanareed",
-    "read_sync_max_pages": 200
+    "_read_sync_comment": "The read shelf loads in batches as you scroll rather than paginating. max_scrolls is a stop limit (also on the Settings tab); scroll_wait_ms is how long a batch is allowed to arrive; quiet_rounds is how many empty waits to tolerate before deciding the shelf has ended.",
+    "read_sync_max_scrolls": 500,
+    "read_sync_scroll_wait_ms": 4000,
+    "read_sync_quiet_rounds": 3
   },
 
   "reenrich": {

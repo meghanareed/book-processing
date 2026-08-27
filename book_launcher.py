@@ -101,6 +101,7 @@ DEFAULT_CONFIG = {
         "retry_failed_after_days": 30,        # 0 = retry failures immediately
         "removals_only": False,               # skip pending adds, do removals only
         "username": "meghanareed",            # for the read-shelf sync URL
+        "read_sync_max_scrolls": 500,         # runaway guard on the read shelf
     },
 }
 
@@ -757,6 +758,16 @@ class SettingsDialog(tk.Toplevel):
             row=10, column=1, sticky="w", pady=(10, 0))
         ttk.Label(parent, text="Used by Sync Read from StoryGraph: app.thestorygraph.com/books-read/<username>",
                   font=("", 8), foreground="gray").grid(row=11, column=1, columnspan=2, sticky="w")
+
+        ttk.Label(parent, text="Max scrolls (read sync):").grid(
+            row=12, column=0, sticky="w", pady=(8, 0))
+        self.sg_vars["read_sync_max_scrolls"] = tk.IntVar(
+            value=self.config.get("storygraph", {}).get("read_sync_max_scrolls", 500))
+        ttk.Spinbox(parent, from_=1, to=10000,
+                    textvariable=self.sg_vars["read_sync_max_scrolls"],
+                    width=10).grid(row=12, column=1, sticky="w", pady=(8, 0))
+        ttk.Label(parent, text="The read shelf loads as you scroll; stop after this many",
+                  font=("", 8), foreground="gray").grid(row=13, column=1, columnspan=2, sticky="w")
 
         parent.columnconfigure(1, weight=1)
     

@@ -26,7 +26,7 @@ except Exception:
 import re
 
 import pandas as pd
-from playwright.sync_api import sync_playwright
+from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
 
 # Reuse the login, browser profile and spreadsheet plumbing rather than
 # duplicating it.  Importing runs that module's config load, which is harmless.
@@ -51,8 +51,12 @@ from storygraph_to_read import (
     wait_for_user_login,
 )
 
-# StoryGraph paginates the shelf; stop after this many pages as a runaway guard.
-MAX_PAGES = int(_SG_CFG.get("read_sync_max_pages", 200))
+# The shelf loads in batches as you scroll.  MAX_SCROLLS is a runaway guard;
+# SCROLL_WAIT_MS is how long to allow a batch to arrive before deciding the
+# shelf has ended, and SCROLL_QUIET_ROUNDS how many such waits to tolerate.
+MAX_SCROLLS = int(_SG_CFG.get("read_sync_max_scrolls", 500))
+SCROLL_WAIT_MS = int(_SG_CFG.get("read_sync_scroll_wait_ms", 4000))
+SCROLL_QUIET_ROUNDS = int(_SG_CFG.get("read_sync_quiet_rounds", 3))
 USERNAME = clean_text(_SG_CFG.get("username"))
 
 
@@ -116,34 +120,78 @@ def _books_from_links(page, seen: set) -> list[tuple[str, str]]:
     return out
 
 
+# Counts whatever the shelf renders — pane containers if present, book links
+# otherwise — so growth can be detected without knowing the exact markup.
+COUNT_BOOKS_JS = """() => Math.max(
+    document.querySelectorAll('.book-pane').length,
+    document.querySelectorAll('a[href*="/books/"]').length
+)"""
+
+
+def scroll_until_loaded(page) -> int:
+    """Scroll to the bottom until the shelf stops adding books.
+
+    The shelf loads in batches as you scroll rather than paginating, so a
+    single pass would only ever see the first screenful.  Each round waits for
+    the count to actually grow instead of sleeping a fixed time: a slow batch
+    still gets picked up, and a fast one isn't waited out.
+    """
+    loaded = page.evaluate(COUNT_BOOKS_JS)
+    log(f"  [SCROLL] {loaded} book(s) loaded initially")
+    quiet_rounds = 0
+
+    for attempt in range(1, MAX_SCROLLS + 1):
+        page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+        try:
+            page.wait_for_function(
+                "prev => Math.max("
+                "  document.querySelectorAll('.book-pane').length,"
+                "  document.querySelectorAll('a[href*=\"/books/\"]').length"
+                ") > prev",
+                arg=loaded,
+                timeout=SCROLL_WAIT_MS,
+            )
+            quiet_rounds = 0
+        except PlaywrightTimeoutError:
+            # Nothing new this round — could be the end of the shelf, or a
+            # batch that is still in flight.  Allow a couple of quiet rounds.
+            quiet_rounds += 1
+            if quiet_rounds >= SCROLL_QUIET_ROUNDS:
+                log(f"  [SCROLL] No new books after {quiet_rounds} attempt(s) — "
+                    f"reached the end")
+                break
+            page.wait_for_timeout(SCROLL_WAIT_MS // 2)
+            continue
+
+        previous, loaded = loaded, page.evaluate(COUNT_BOOKS_JS)
+        if attempt % 5 == 0 or loaded - previous > 50:
+            log(f"  [SCROLL] {loaded} book(s) loaded…")
+    else:
+        log(f"  [SCROLL] Hit the {MAX_SCROLLS}-scroll limit — "
+            f"raise read_sync_max_scrolls if your shelf is larger")
+
+    log(f"  [SCROLL] Finished with {loaded} book(s) on the page")
+    return loaded
+
+
 def scrape_read_shelf(page, username: str) -> list[tuple[str, str]]:
     """Return (title, author) for every book on the read shelf."""
-    books: list[tuple[str, str]] = []
+    url = f"{BASE_URL}/books-read/{username}"
+    log(f"  [READ] Opening {url}")
+    try:
+        page.goto(url, wait_until="domcontentloaded", timeout=30000)
+        page.wait_for_timeout(2000)
+    except Exception as e:
+        log(f"  [READ] Could not load the shelf: {e}")
+        return []
+
+    scroll_until_loaded(page)
+
     seen_hrefs: set[str] = set()
-
-    for page_num in range(1, MAX_PAGES + 1):
-        # Page 1 is the bare shelf URL; only later pages need the parameter.
-        url = f"{BASE_URL}/books-read/{username}"
-        if page_num > 1:
-            url += f"?page={page_num}"
-        log(f"  [READ] Page {page_num}: {url}")
-        try:
-            page.goto(url, wait_until="domcontentloaded", timeout=30000)
-            page.wait_for_timeout(1500)
-        except Exception as e:
-            log(f"  [READ] Could not load page {page_num}: {e}")
-            break
-
-        found = _books_from_panes(page, seen_hrefs)
-        if not found and page_num == 1:
-            log("  [READ] No .book-pane containers — trying raw book links")
-            found = _books_from_links(page, seen_hrefs)
-
-        log(f"  [READ] Page {page_num}: {len(found)} new book(s)")
-        if not found:
-            break
-        books.extend(found)
-
+    books = _books_from_panes(page, seen_hrefs)
+    if not books:
+        log("  [READ] No .book-pane containers — trying raw book links")
+        books = _books_from_links(page, seen_hrefs)
     return books
 
 
