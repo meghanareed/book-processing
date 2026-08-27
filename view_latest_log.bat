@@ -1,5 +1,7 @@
 @echo off
-cd /d "C:\Users\megha\OneDrive\Documents\Reading\logs"
+:: Logs are written next to the spreadsheets, not next to the code
+set "LOGDIR=C:\Users\megha\OneDrive\Documents\Reading\logs"
+cd /d "%LOGDIR%"
 
 echo Finding latest StoryGraph log...
 echo.
@@ -18,7 +20,7 @@ if not defined LATEST (
 )
 
 echo Latest log: %LATEST%
-echo Location: C:\Users\megha\OneDrive\Documents\Reading\logs\%LATEST%
+echo Location: %LOGDIR%\%LATEST%
 echo.
 echo ============================================================
 type "%LATEST%"

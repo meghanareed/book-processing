@@ -6,7 +6,7 @@ A unified launcher that replaces your three .bat files with one clean GUI, plus 
 
 ## Step 1: Install the Launcher
 
-1. **Download these files** to `C:\Users\megha\OneDrive\Documents\Reading`:
+1. **Clone the repo** to `C:\Users\megha\book-tools` (outside OneDrive — see README.md):
    - `book_launcher.py`
    - `apply_reading_log.py`
    - `Launcher.bat`
@@ -125,19 +125,19 @@ Before opening the browser, **Push to StoryGraph** filters out books matching an
 
 | File | What It Does | Where It Goes |
 |------|-------------|---------------|
-| `book_launcher.py` | The GUI app | Reading folder |
-| `apply_reading_log.py` | Processes decisions JSON | Reading folder |
-| `Launcher.bat` | Starts the GUI | Reading folder (shortcut to desktop) |
+| `book_launcher.py` | The GUI app | book-tools |
+| `apply_reading_log.py` | Processes decisions JSON | book-tools |
+| `Launcher.bat` | Starts the GUI | book-tools (shortcut to desktop) |
 | `my-book-selector-modified.html` | Updated selector | Upload to GitHub |
-| `README.md` | Documentation | Reading folder (optional) |
-| `book-selector-decisions.example.json` | Shows export format | Reading folder (optional) |
+| `README.md` | Documentation | book-tools (optional) |
+| `book-selector-decisions.example.json` | Shows export format | book-tools (optional) |
 
 ---
 
 ## Troubleshooting
 
 **"Script not found"**
-→ Make sure all .py files are in `C:\Users\megha\OneDrive\Documents\Reading`
+→ Make sure all .py files are in your clone, e.g. `C:\Users\megha\book-tools`
 
 **Python errors on first run**
 → Normal! Each button auto-installs packages first time. Wait for it to finish.

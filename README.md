@@ -11,16 +11,33 @@ Single GUI for all your reading workflow scripts.
 
 ## Setup
 
-1. Copy all files to `C:\Users\megha\OneDrive\Documents\Reading`
-2. Make sure you have these files in the same folder:
-   - books.py
-   - amazon_owned_books.py
-   - storygraph_to_read.py
-   - books_output.xlsx
-   - my-reading-log.xlsx
+The code lives in a git clone; the data stays in OneDrive. Keep them apart — OneDrive
+syncing a `.git` folder corrupts the repository. See `REPO_SETUP.md` for the full rationale.
 
-3. **Optional:** Right-click `Launcher.bat` → Send to → Desktop (create shortcut)
-   This gives you a one-click launcher on your desktop.
+```
+C:\Users\megha\book-tools\                     <- this repo (code)
+C:\Users\megha\OneDrive\Documents\Reading\     <- spreadsheets and logs
+C:\Users\megha\OneDrive\Pictures\...\DCIM\Books  <- incoming screenshots
+```
+
+```powershell
+cd C:\Users\megha
+git clone https://github.com/meghanareed/book-processing.git book-tools
+cd book-tools
+
+py -m venv venv                 # name it "venv" — Launcher.bat looks for that
+.\venv\Scripts\Activate.ps1
+py -m pip install -r requirements.txt
+py -m playwright install chromium
+
+copy launcher_config.example.json launcher_config.json
+```
+
+Then start the launcher and open **Settings** to set your OpenAI API key and confirm the
+three folder paths on the Books.py tab.
+
+**Optional:** Right-click `Launcher.bat` → Send to → Desktop (create shortcut)
+for a one-click launcher.
 
 ## Usage
 
@@ -33,9 +50,12 @@ Double-click `Launcher.bat` (or your desktop shortcut). You'll see buttons for:
 3. **Push to StoryGraph** - Adds books to your StoryGraph to-read list
 4. **Open Book Selector** - Opens https://meghanareed.github.io/my-book-selector/
 5. **Apply Selector Decisions** - Imports decisions JSON to update both spreadsheets
-6. **Open Reading Folder** - Opens the folder in Explorer
+6. **Fill Missing Metadata** - Runs reenrich_existing.py to backfill PageCount, Genre, Tropes
+7. **Open Reading Folder** - Opens the data folder in Explorer
+8. **View Latest Log** - Opens the newest log file from the data folder's `logs\`
 
-Each script runs in its own console window so you can watch the output.
+Output streams into the launcher's Output Log panel as each script runs. The panel clears
+at the start of every run; the full history is in `logs\` in the data folder.
 
 ### The Book Selector Workflow
 
@@ -91,9 +111,9 @@ The selector exports JSON like this:
 
 **"Script not found"**: Make sure all your .py files are in the same folder as the launcher.
 
-**Python errors**: Each button automatically installs required packages. If you see errors, try:
-1. Open cmd in the Reading folder
-2. Run: `py -m pip install --upgrade pip`
+**Python errors**: Each button installs its required packages before running. If you see errors, try:
+1. Open PowerShell in your `book-tools` folder
+2. Run: `py -m pip install -r requirements.txt`
 3. Run the launcher again
 
 **Playwright errors**: The first time you run Amazon/StoryGraph tools, Playwright will download Chromium. This can take a few minutes.

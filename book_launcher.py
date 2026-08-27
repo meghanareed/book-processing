@@ -515,7 +515,7 @@ class SettingsDialog(tk.Toplevel):
     def __init__(self, parent, config: dict):
         super().__init__(parent)
         self.title("Settings")
-        self.geometry("600x500")
+        self.minsize(700, 560)
         self.config = config.copy()
         self.result = None
         
@@ -525,16 +525,38 @@ class SettingsDialog(tk.Toplevel):
         self.grab_set()
     
     def center_window(self):
+        """Size the dialog to whatever the tallest tab needs, then centre it.
+
+        Sizing from the content rather than a hardcoded geometry means adding
+        settings rows can't push the Save/Cancel row out of view again.  The
+        result is clamped so the dialog still fits on screen.
+        """
         self.update_idletasks()
-        x = (self.winfo_screenwidth() // 2) - (self.winfo_width() // 2)
-        y = (self.winfo_screenheight() // 2) - (self.winfo_height() // 2)
-        self.geometry(f"+{x}+{y}")
+
+        width  = max(self.winfo_reqwidth(),  self.winfo_width())
+        height = max(self.winfo_reqheight(), self.winfo_height())
+        width  = min(width,  self.winfo_screenwidth()  - 100)
+        height = min(height, self.winfo_screenheight() - 100)
+
+        x = (self.winfo_screenwidth()  // 2) - (width  // 2)
+        y = (self.winfo_screenheight() // 2) - (height // 2)
+        self.geometry(f"{width}x{height}+{x}+{max(y, 0)}")
     
     def build_ui(self):
+        # The button row is packed against the bottom FIRST so it always keeps
+        # its space.  Packing the notebook first lets its expand=True claim
+        # everything and push Save/Cancel off the bottom of a short window.
+        btn_frame = ttk.Frame(self)
+        btn_frame.pack(side="bottom", fill="x", padx=10, pady=10)
+
+        ttk.Button(btn_frame, text="Save", command=self.save).pack(side="right", padx=5)
+        ttk.Button(btn_frame, text="Cancel", command=self.cancel).pack(side="right")
+        ttk.Button(btn_frame, text="Reset to Defaults", command=self.reset_defaults).pack(side="left")
+
         # Notebook for tabs
         notebook = ttk.Notebook(self)
-        notebook.pack(fill="both", expand=True, padx=10, pady=10)
-        
+        notebook.pack(side="top", fill="both", expand=True, padx=10, pady=(10, 0))
+
         # Books.py tab
         books_frame = ttk.Frame(notebook, padding=10)
         notebook.add(books_frame, text="📸 Books.py")
@@ -550,14 +572,6 @@ class SettingsDialog(tk.Toplevel):
         notebook.add(sg_frame, text="📚 StoryGraph")
         self.build_storygraph_settings(sg_frame)
         
-        # Buttons
-        btn_frame = ttk.Frame(self)
-        btn_frame.pack(fill="x", padx=10, pady=10)
-        
-        ttk.Button(btn_frame, text="Save", command=self.save).pack(side="right", padx=5)
-        ttk.Button(btn_frame, text="Cancel", command=self.cancel).pack(side="right")
-        ttk.Button(btn_frame, text="Reset to Defaults", command=self.reset_defaults).pack(side="left")
-    
     def build_books_settings(self, parent):
         self.books_vars = {}
         
