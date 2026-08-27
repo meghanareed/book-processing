@@ -54,10 +54,13 @@ venv/
 env/
 
 # ============================================================
-#  Playwright browsers
+#  Playwright browsers and saved browser profiles
+#  The profile holds your StoryGraph session and bot-check
+#  clearance cookie — machine-local, never commit it.
 # ============================================================
 .playwright/
 ms-playwright/
+browser_profile/
 
 # ============================================================
 #  OS / editor

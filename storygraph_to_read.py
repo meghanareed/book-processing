@@ -67,6 +67,17 @@ TITLE_MATCH_THRESHOLD = 0.60  # Lowered from 0.65 for better matching
 SKIP_IF_PROCESSED_WITHIN_DAYS = _cfg_days("skip_if_processed_within_days", 30)
 RETRY_FAILED_AFTER_DAYS       = _cfg_days("retry_failed_after_days", 30)
 
+# A real, reused browser profile rather than a blank one per run.  StoryGraph's
+# bot check hands out a clearance cookie; with a throwaway profile there is
+# nowhere to keep it, so every run starts the challenge from scratch.  Kept
+# beside the code, not in OneDrive — profiles are large and hold lock files
+# that OneDrive fights over.
+USER_DATA_DIR = SCRIPT_DIR / "browser_profile" / "storygraph"
+
+# Prefer a real Chrome install; its fingerprint clears checks that the bundled
+# Chromium build trips.  Falls back to Chromium when Chrome isn't present.
+BROWSER_CHANNEL = _SG_CFG.get("browser_channel", "chrome")
+
 # Logging
 LOG_FILE = None
 
@@ -266,6 +277,41 @@ def build_search_queries(row: pd.Series) -> list[str]:
     return out
 
 
+def launch_browser(p):
+    """Open a persistent browser profile and return the context.
+
+    Persisting the profile is what makes the security check survive between
+    runs: the clearance cookie and your StoryGraph session are stored on disk
+    instead of being thrown away when the browser closes.  The first run still
+    needs you to clear the check and log in by hand; later runs should come up
+    already verified and signed in.
+    """
+    USER_DATA_DIR.mkdir(parents=True, exist_ok=True)
+
+    options = dict(
+        user_data_dir=str(USER_DATA_DIR),
+        headless=HEADLESS,
+        viewport={"width": 1400, "height": 900},
+        locale="en-US",
+        # Playwright otherwise launches with --enable-automation, which the
+        # check reads as "this is not a person".
+        args=["--disable-blink-features=AutomationControlled"],
+        ignore_default_args=["--enable-automation"],
+    )
+
+    if BROWSER_CHANNEL:
+        try:
+            context = p.chromium.launch_persistent_context(channel=BROWSER_CHANNEL, **options)
+            log(f"  [BROWSER] Using {BROWSER_CHANNEL} with profile: {USER_DATA_DIR}")
+            return context
+        except Exception as e:
+            log(f"  [BROWSER] {BROWSER_CHANNEL} unavailable ({e}); falling back to Chromium")
+
+    context = p.chromium.launch_persistent_context(**options)
+    log(f"  [BROWSER] Using bundled Chromium with profile: {USER_DATA_DIR}")
+    return context
+
+
 def wait_for_user_login(page):
     """
     Open StoryGraph and wait for user to log in.
@@ -284,8 +330,13 @@ def wait_for_user_login(page):
     
     messagebox.showinfo(
         "StoryGraph Login",
-        "Please log into StoryGraph in the browser window that just opened.\n\n"
-        "After you've logged in and can see your library, click OK to continue.",
+        "In the browser window that just opened:\n\n"
+        "1. If you see \"Performing security verification\", wait for it to "
+        "finish. Don't refresh — refreshing restarts the check.\n"
+        "2. Log in if you aren't already.\n\n"
+        "Click OK once you can see your library.\n\n"
+        "The browser profile is saved, so later runs should come up already "
+        "verified and signed in.",
         parent=root
     )
     
@@ -893,9 +944,8 @@ def main():
     stopped_early = False
 
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=HEADLESS)
-        context = browser.new_context()
-        page    = context.new_page()
+        context = launch_browser(p)
+        page    = context.pages[0] if context.pages else context.new_page()
 
         wait_for_user_login(page)
 
@@ -970,7 +1020,7 @@ def main():
             time.sleep(SLEEP_BETWEEN_BOOKS)
 
         try:
-            browser.close()
+            context.close()   # persistent context — this also writes the profile out
         except Exception:
             pass
 
