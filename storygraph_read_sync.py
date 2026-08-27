@@ -42,10 +42,8 @@ from storygraph_to_read import (
     clean_text,
     ensure_storygraph_columns,
     fold,
-    is_book_result_link,
     launch_browser,
     log,
-    safe_inner_text,
     save_excel,
     short_title,
     wait_for_user_login,
@@ -76,48 +74,46 @@ def discover_username(page) -> str:
     return ""
 
 
-def _books_from_panes(page, seen: set) -> list[tuple[str, str]]:
-    """Read (title, author) out of .book-pane containers."""
-    out = []
-    panes = page.locator(".book-pane")
-    for i in range(panes.count()):
-        try:
-            pane = panes.nth(i)
-            link = pane.locator('a[href*="/books/"]').first
-            href = clean_text(link.get_attribute("href"))
-            if not href or "/editions" in href or href in seen:
-                continue
-            title = safe_inner_text(link)
-            if not title:
-                continue
-            seen.add(href)
-            out.append((title, safe_inner_text(pane.locator('a[href*="/authors/"]').first)))
-        except Exception:
-            continue
-    return out
+# Pull every book off the shelf in one call.  Doing it per element meant a
+# Playwright round trip for each of ~2700 links, which took minutes; this runs
+# entirely in the page and returns in one go.
+#
+# Note '.book-pane' is NOT a book card — StoryGraph uses it for the Description,
+# Community Reviews and Content Warnings panes.  Matching on it found two
+# content panes and nothing else.  The book links themselves are the reliable
+# marker: /books/<uuid> exactly, which excludes /books/new, /editions,
+# /similar and /add_missing_info.
+EXTRACT_BOOKS_JS = r"""() => {
+  const seen = new Set();
+  const out = [];
+  document.querySelectorAll('a[href*="/books/"]').forEach(a => {
+    const href = (a.getAttribute('href') || '').split('?')[0].replace(/\/$/, '');
+    if (!/^\/books\/[0-9a-f-]{36}$/i.test(href)) return;
+    if (seen.has(href)) return;
+    const title = (a.innerText || '').trim();
+    if (!title) return;          // the cover link wraps an image, no text
+    seen.add(href);
+    // Walk up until a block containing an author link is found.
+    let author = '', el = a;
+    for (let i = 0; i < 6 && el; i++) {
+      const link = el.querySelector && el.querySelector('a[href*="/authors/"]');
+      if (link) { author = (link.innerText || '').trim(); break; }
+      el = el.parentElement;
+    }
+    out.push({ title, author, href });
+  });
+  return out;
+}"""
 
 
-def _books_from_links(page, seen: set) -> list[tuple[str, str]]:
-    """Fallback for when .book-pane is absent: scan the book links directly
-    and take the author from each link's surrounding block."""
-    out = []
-    links = page.locator('a[href*="/books/"]')
-    for i in range(links.count()):
-        try:
-            link = links.nth(i)
-            href = clean_text(link.get_attribute("href"))
-            title = safe_inner_text(link)
-            if not is_book_result_link(title, href) or href in seen:
-                continue
-            seen.add(href)
-            author = safe_inner_text(
-                link.locator("xpath=ancestor::*[self::li or self::article or self::div][1]")
-                    .locator('a[href*="/authors/"]').first
-            )
-            out.append((title, author))
-        except Exception:
-            continue
-    return out
+def extract_books(page) -> list[tuple[str, str]]:
+    """Return (title, author) for every book rendered on the page."""
+    try:
+        rows = page.evaluate(EXTRACT_BOOKS_JS)
+    except Exception as e:
+        log(f"  [READ] Extraction failed: {e}")
+        return []
+    return [(clean_text(r.get("title")), clean_text(r.get("author"))) for r in rows]
 
 
 # Counts whatever the shelf renders — pane containers if present, book links
@@ -186,13 +182,7 @@ def scrape_read_shelf(page, username: str) -> list[tuple[str, str]]:
         return []
 
     scroll_until_loaded(page)
-
-    seen_hrefs: set[str] = set()
-    books = _books_from_panes(page, seen_hrefs)
-    if not books:
-        log("  [READ] No .book-pane containers — trying raw book links")
-        books = _books_from_links(page, seen_hrefs)
-    return books
+    return extract_books(page)
 
 
 def apply_to_excel(books: list[tuple[str, str]]) -> None:
