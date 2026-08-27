@@ -51,7 +51,8 @@ TOOLS = [
         "script": "storygraph_to_read.py",
         "packages": ["pandas", "openpyxl", "playwright"],
         "post_install": [[sys.executable, "-m", "playwright", "install", "chromium"]],
-        "force_console": True,  # Always show console for progress monitoring
+        # Set force_console: True here to get a separate console window back
+        # instead of streaming into the Output Log panel.
     },
 ]
 
@@ -297,33 +298,147 @@ def apply_decisions(status_var: tk.StringVar, log_widget: tk.Text, config: dict)
 
     py = find_python()
 
+    env = os.environ.copy()
+    env["PYTHONUNBUFFERED"] = "1"
+
     def worker() -> None:
         status_var.set("Applying decisions…")
         log_widget.configure(state="normal")
         log_widget.delete("1.0", tk.END)
         try:
-            proc = subprocess.Popen(
-                [py, str(apply_path), json_path],
-                cwd=str(SCRIPT_DIR),
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                bufsize=1,
+            returncode = _stream_into_log(
+                [py, "-u", str(apply_path), json_path], log_widget, env,
             )
-            assert proc.stdout is not None
-            for line in proc.stdout:
-                log_widget.insert(tk.END, line)
-                log_widget.see(tk.END)
-            proc.wait()
-            if proc.returncode == 0:
+            if returncode == 0:
                 status_var.set("Decisions applied [OK]")
             else:
-                status_var.set(f"Failed (exit {proc.returncode})")
+                status_var.set(f"Failed (exit {returncode})")
         except Exception as exc:  # noqa: BLE001
             log_widget.insert(tk.END, f"\nERROR: {exc}\n")
             status_var.set("Failed")
         finally:
             log_widget.configure(state="disabled")
+
+    threading.Thread(target=worker, daemon=True).start()
+
+
+def _stream_into_log(cmd: list[str], log_widget: tk.Text, env: dict,
+                     on_proc=None) -> int:
+    """Run cmd, streaming merged stdout/stderr into log_widget line by line.
+
+    Returns the exit code.  stdin is DEVNULL because under pythonw there is no
+    console: a stray input() should fail fast rather than block forever.
+    """
+    proc = subprocess.Popen(
+        cmd,
+        cwd=str(SCRIPT_DIR),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        stdin=subprocess.DEVNULL,
+        text=True,
+        bufsize=1,
+        env=env,
+    )
+    if on_proc:
+        on_proc(proc)
+
+    assert proc.stdout is not None
+    for line in proc.stdout:
+        log_widget.insert(tk.END, line)
+        log_widget.see(tk.END)
+        log_widget.update_idletasks()   # keep UI responsive while lines stream in
+
+    proc.wait()
+    return proc.returncode
+
+
+def launch_in_panel(tool: dict, config: dict, status_var: tk.StringVar,
+                    log_widget: tk.Text, status_label: tk.Label) -> None:
+    """Run a tool with its output streamed into the Output Log panel.
+
+    Does the same work as launch_in_console() — install dependencies, then run
+    the script — but pipes everything into the GUI instead of opening a
+    separate console window.  Set "force_console": True on a tool in TOOLS to
+    get the old console behaviour back for that one tool.
+    """
+    script_name = tool["script"]
+    script_path = SCRIPT_DIR / script_name
+    if not script_path.exists():
+        messagebox.showerror(
+            "Script not found",
+            f"Couldn't find:\n{script_path}\n\nMake sure the launcher lives in the "
+            f"same folder as your scripts.",
+        )
+        return
+
+    with PROCESS_LOCK:
+        if script_name in RUNNING_PROCESSES:
+            messagebox.showwarning(
+                "Already Running",
+                f"{tool['label']} is already running.\n\n"
+                f"Use 'Stop All Scripts' to terminate it.",
+            )
+            return
+
+    py  = find_python()
+    env = os.environ.copy()
+    env["PYTHONUNBUFFERED"] = "1"
+
+    api_key = config.get("books_py", {}).get("openai_api_key", "")
+    if api_key:
+        env["OPENAI_API_KEY"] = api_key
+
+    def emit(text: str) -> None:
+        log_widget.insert(tk.END, text)
+        log_widget.see(tk.END)
+        log_widget.update_idletasks()
+
+    def worker() -> None:
+        track_process(script_name, None)   # placeholder so the status label updates
+        update_status_label(status_label)
+
+        log_widget.configure(state="normal")
+        log_widget.delete("1.0", tk.END)
+        emit(f">> {tool['label']}\n{'=' * 50}\n")
+        status_var.set(f"{tool['label']} running…")
+
+        try:
+            if tool["packages"]:
+                emit(f"[setup] Checking packages: {' '.join(tool['packages'])}\n")
+                _stream_into_log(
+                    [py, "-m", "pip", "install", "--quiet", *tool["packages"]],
+                    log_widget, env,
+                )
+
+            for extra in tool["post_install"]:
+                # These entries embed sys.executable, which is pythonw.exe when
+                # started from Launcher.bat — use the interpreter we resolved.
+                cmd = [py if p == sys.executable else p for p in extra]
+                emit(f"[setup] {' '.join(cmd[1:])}\n")
+                _stream_into_log(cmd, log_widget, env)
+
+            emit(f"{'=' * 50}\n")
+
+            def _track(p):
+                track_process(script_name, p)
+                update_status_label(status_label)
+
+            code = _stream_into_log(
+                [py, "-u", str(script_path)], log_widget, env, on_proc=_track,
+            )
+            status_var.set(
+                f"{tool['label']} finished [OK]" if code == 0
+                else f"{tool['label']} failed (exit {code})"
+            )
+            emit(f"\n{'=' * 50}\nDone\n")
+
+        except Exception as exc:
+            emit(f"\nERROR: {exc}\n")
+            status_var.set(f"{tool['label']} — error")
+        finally:
+            log_widget.configure(state="disabled")
+            untrack_process(script_name)
+            update_status_label(status_label)
 
     threading.Thread(target=worker, daemon=True).start()
 
@@ -360,28 +475,17 @@ def run_piped(label: str, script: str, args: list[str],
         log_widget.see(tk.END)
 
         try:
-            proc = subprocess.Popen(
-                [py, "-u", str(script_path)] + args,
-                cwd=str(SCRIPT_DIR),
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                bufsize=1,
-                env=env,
+            def _track(p):
+                track_process(script, p)
+                update_status_label(status_label)
+
+            returncode = _stream_into_log(
+                [py, "-u", str(script_path)] + args, log_widget, env,
+                on_proc=_track,
             )
-            track_process(script, proc)
-            update_status_label(status_label)
-
-            assert proc.stdout is not None
-            for line in proc.stdout:
-                log_widget.insert(tk.END, line)
-                log_widget.see(tk.END)
-                log_widget.update_idletasks()   # keep UI responsive while lines stream in
-
-            proc.wait()
             status_var.set(
-                f"{label} finished [OK]" if proc.returncode == 0
-                else f"{label} failed (exit {proc.returncode})"
+                f"{label} finished [OK]" if returncode == 0
+                else f"{label} failed (exit {returncode})"
             )
             log_widget.insert(tk.END, f"\n{'='*50}\nDone\n")
 
@@ -644,7 +748,11 @@ def build_ui(config: dict) -> tk.Tk:
             text=tool["label"],
             style="Tool.TButton",
             width=24,
-            command=lambda t=tool: launch_in_console(t, config, status_label),
+            command=lambda t=tool: (
+                launch_in_console(t, config, status_label)
+                if t.get("force_console")
+                else launch_in_panel(t, config, status_var, log_widget, status_label)
+            ),
         ).pack(side="left")
         ttk.Label(
             frame,
