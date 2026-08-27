@@ -17,33 +17,69 @@ from openai import OpenAI
 # =========================
 # CONFIG
 # =========================
-BASE_FOLDER = Path(r"C:\Users\megha\OneDrive\Pictures\Samsung Gallery\Gallery\Books")
+SCRIPT_DIR = Path(__file__).resolve().parent
+DEFAULT_DATA_DIR = Path(r"C:\Users\megha\OneDrive\Documents\Reading")
+
+
+def _load_launcher_config() -> dict:
+    """Read the settings saved by book_launcher.py.
+
+    The launcher writes launcher_config.json next to itself; fall back to the
+    data folder for the old layout where code and data shared a folder.
+    """
+    for candidate in (SCRIPT_DIR / "launcher_config.json",
+                      DEFAULT_DATA_DIR / "launcher_config.json"):
+        if candidate.exists():
+            try:
+                cfg = json.loads(candidate.read_text(encoding="utf-8"))
+                print(f"[CONFIG] Loaded settings from {candidate}", flush=True)
+                return cfg
+            except Exception as e:
+                print(f"[CONFIG] Could not read {candidate}: {e}", flush=True)
+    print("[CONFIG] No launcher_config.json found — using built-in defaults", flush=True)
+    return {}
+
+
+_BOOKS_CFG = _load_launcher_config().get("books_py", {})
+
+# --- Folders.  Each can be overridden in launcher_config.json -> books_py ---
+# incoming_folder    : screenshots to process (top level only, not recursive)
+# sync_source_folder : scanned recursively first; new files copied to incoming
+# data_folder        : where the spreadsheet and run logs live
+BASE_FOLDER = Path(_BOOKS_CFG.get("incoming_folder")
+                   or r"C:\Users\megha\OneDrive\Pictures\Samsung Gallery\DCIM\Books")
 INCOMING_FOLDER = BASE_FOLDER
 PROCESSED_FOLDER = BASE_FOLDER / "processed"
 SKIPPED_FOLDER = BASE_FOLDER / "skipped"
 
-BOOKS_2_ROOT = Path(r"C:\Users\megha\OneDrive\Pictures\Samsung Gallery\DCIM\Books 2.0")
+BOOKS_2_ROOT = Path(_BOOKS_CFG.get("sync_source_folder")
+                    or r"C:\Users\megha\OneDrive\Pictures\Samsung Gallery\DCIM\Books 2.0")
 
-OUTPUT_XLSX = BASE_FOLDER / "books_output.xlsx"
-PROGRESS_CSV = BASE_FOLDER / "_progress_all_books.csv"
-ERROR_LOG = BASE_FOLDER / "_errors.csv"
-SYNC_LOG = BASE_FOLDER / "_sync_log.csv"
+# The spreadsheet and run logs belong with the rest of the book data so that
+# amazon_owned_books.py, storygraph_to_read.py and reenrich_existing.py all
+# read the same file this script writes.
+DATA_DIR = Path(_BOOKS_CFG.get("data_folder") or DEFAULT_DATA_DIR)
+OUTPUT_XLSX = DATA_DIR / "books_output.xlsx"
+PROGRESS_CSV = DATA_DIR / "_progress_all_books.csv"
+ERROR_LOG = DATA_DIR / "_errors.csv"
+SYNC_LOG = DATA_DIR / "_sync_log.csv"
 
-MODEL = "gpt-4.1-mini"
-MAX_WORKERS = 4
-CONFIDENCE_THRESHOLD = 0.75
+MODEL = _BOOKS_CFG.get("model") or "gpt-4o-mini"
+MAX_WORKERS = int(_BOOKS_CFG.get("max_workers") or 4)
+CONFIDENCE_THRESHOLD = float(_BOOKS_CFG.get("confidence_threshold", 0.75))
 SUPPORTED_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
 
-# TEST MODE
-TEST_LIMIT = 10
+# TEST MODE — Settings > Test Mode gates it, Test Limit sets the sample size.
+# 0 means no limit, i.e. process every incoming image.
+TEST_LIMIT = int(_BOOKS_CFG.get("test_limit") or 10) if _BOOKS_CFG.get("test_mode") else 0
 RANDOM_SAMPLE = True
 
 # If True, compare files by filename only
 COMPARE_BY_FILENAME_ONLY = True
 
 # Metadata enrichment
-ENABLE_METADATA_ENRICHMENT = True
-ENABLE_ASIN_LOOKUP = True
+ENABLE_METADATA_ENRICHMENT = bool(_BOOKS_CFG.get("enable_metadata_enrichment", True))
+ENABLE_ASIN_LOOKUP = bool(_BOOKS_CFG.get("enable_asin_lookup", True))
 ENABLE_CONTENT_ENRICHMENT = True
 
 LOOKUP_TIMEOUT_SECONDS = 20
@@ -98,8 +134,14 @@ client = OpenAI(api_key=api_key)
 # =========================
 # SETUP
 # =========================
-PROCESSED_FOLDER.mkdir(exist_ok=True)
-SKIPPED_FOLDER.mkdir(exist_ok=True)
+# parents=True so a freshly configured incoming_folder doesn't have to exist
+# yet.  This runs on import — amazon_owned_books.py loads this module for its
+# enrichment helpers — so it must not raise when the folder is missing.
+for _folder in (PROCESSED_FOLDER, SKIPPED_FOLDER, DATA_DIR):
+    try:
+        _folder.mkdir(parents=True, exist_ok=True)
+    except Exception as _mkdir_err:
+        print(f"[SETUP] Could not create {_folder}: {_mkdir_err}", flush=True)
 
 # =========================
 # HELPERS
