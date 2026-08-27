@@ -28,6 +28,14 @@ from tkinter import filedialog, messagebox, ttk
 SCRIPT_DIR = Path(__file__).resolve().parent
 DATA_DIR = Path(r"C:\Users\megha\OneDrive\Documents\Reading")
 
+# Default folders books.py works with.  These must match the fallbacks in
+# books.py so the Settings dialog shows what the script would actually use.
+DATA_ROOTS = {
+    "incoming":    Path(r"C:\Users\megha\OneDrive\Pictures\Samsung Gallery\DCIM\Books"),
+    "sync_source": Path(r"C:\Users\megha\OneDrive\Pictures\Samsung Gallery\DCIM\Books 2.0"),
+    "data":        DATA_DIR,
+}
+
 CONFIG_FILE = SCRIPT_DIR / "launcher_config.json"
 
 TOOLS = [
@@ -70,6 +78,11 @@ DEFAULT_CONFIG = {
         "test_limit": 10,
         "enable_metadata_enrichment": True,
         "enable_asin_lookup": True,
+        # Folders books.py reads and writes.  Kept here so Reset to Defaults
+        # restores them alongside everything else.
+        "incoming_folder": str(DATA_ROOTS["incoming"]),
+        "sync_source_folder": str(DATA_ROOTS["sync_source"]),
+        "data_folder": str(DATA_ROOTS["data"]),
     },
     "amazon_owned_books": {
         "start_page": 1,
@@ -590,7 +603,45 @@ class SettingsDialog(tk.Toplevel):
         # ASIN Lookup
         self.books_vars["enable_asin_lookup"] = tk.BooleanVar(value=self.config.get("books_py", {}).get("enable_asin_lookup", True))
         ttk.Checkbutton(parent, text="Enable ASIN Lookup", variable=self.books_vars["enable_asin_lookup"]).grid(row=7, column=1, sticky="w", pady=2)
-        
+
+        # --- Folders ---------------------------------------------------------
+        ttk.Separator(parent, orient="horizontal").grid(
+            row=8, column=0, columnspan=3, sticky="ew", pady=(12, 6))
+        ttk.Label(parent, text="Folders", font=("", 9, "bold")).grid(
+            row=9, column=0, sticky="w")
+
+        folder_fields = [
+            ("incoming_folder", "Incoming (screenshots):",
+             DEFAULT_CONFIG["books_py"]["incoming_folder"],
+             "Scanned top level only, not subfolders"),
+            ("sync_source_folder", "Sync source:",
+             DEFAULT_CONFIG["books_py"]["sync_source_folder"],
+             "Scanned recursively; new files copied to Incoming"),
+            ("data_folder", "Data (spreadsheet + logs):",
+             DEFAULT_CONFIG["books_py"]["data_folder"],
+             "Must match the folder the other tools use"),
+        ]
+
+        for offset, (key, label, default, hint) in enumerate(folder_fields):
+            row = 10 + (offset * 2)
+            ttk.Label(parent, text=label).grid(row=row, column=0, sticky="w", pady=(5, 0))
+
+            var = tk.StringVar(value=self.config.get("books_py", {}).get(key, default))
+            self.books_vars[key] = var
+            ttk.Entry(parent, textvariable=var, width=50).grid(
+                row=row, column=1, sticky="ew", pady=(5, 0))
+
+            def browse(v=var, t=label):
+                chosen = filedialog.askdirectory(
+                    title=t, initialdir=v.get() or str(SCRIPT_DIR), parent=self)
+                if chosen:
+                    v.set(str(Path(chosen)))
+
+            ttk.Button(parent, text="Browse…", command=browse, width=9).grid(
+                row=row, column=2, sticky="w", padx=5, pady=(5, 0))
+            ttk.Label(parent, text=hint, font=("", 8), foreground="gray").grid(
+                row=row + 1, column=1, sticky="w")
+
         parent.columnconfigure(1, weight=1)
     
     def build_amazon_settings(self, parent):
