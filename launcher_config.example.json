@@ -41,7 +41,11 @@
     "save_every_n_books": 25,
 
     "_removals_only_comment": "true processes only books marked Removed in the selector, skipping every pending add. Max Books samples at random across everything eligible, so with a handful of removals among a thousand adds it would rarely pick one — use this to run or test removals on their own.",
-    "removals_only": false
+    "removals_only": false,
+
+    "_username_comment": "Your StoryGraph username, used by Sync Read from StoryGraph to open your read shelf. Leave blank and it is discovered from the profile link after you log in.",
+    "username": "",
+    "read_sync_max_pages": 200
   },
 
   "reenrich": {

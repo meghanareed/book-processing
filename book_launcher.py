@@ -62,6 +62,13 @@ TOOLS = [
         # Set force_console: True here to get a separate console window back
         # instead of streaming into the Output Log panel.
     },
+    {
+        "label": "Sync Read from StoryGraph",
+        "subtitle": "Run storygraph_read_sync.py — mark books read on SG as Read",
+        "script": "storygraph_read_sync.py",
+        "packages": ["pandas", "openpyxl", "playwright"],
+        "post_install": [[sys.executable, "-m", "playwright", "install", "chromium"]],
+    },
 ]
 
 SELECTOR_HTML = "my-book-selector.html"
