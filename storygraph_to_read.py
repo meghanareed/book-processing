@@ -1,3 +1,4 @@
+import re
 import time
 import difflib
 import datetime
@@ -142,6 +143,30 @@ def clean_text(value) -> str:
     return str(value).strip()
 
 
+def clean_isbn(value) -> str:
+    """Normalise an ISBN cell, dropping ones Excel has mangled into floats.
+
+    Excel stores a 13-digit ISBN as a number, so it comes back as
+    '9781390000000.0' — the '.0' is cosmetic but the zeros are real digits
+    lost to float precision. Searching for that finds nothing and costs a
+    page load, so a value whose digits have clearly been rounded away is
+    dropped rather than queried.
+    """
+    text = clean_text(value)
+    if not text:
+        return ""
+    if text.endswith(".0"):
+        text = text[:-2]
+    text = text.replace("-", "").replace(" ", "")
+    if not re.fullmatch(r"\d{9}[\dXx]|\d{13}", text):
+        return ""
+    # 9781390000000 and friends: precision loss leaves a run of trailing zeros
+    # no real ISBN has, since the last digit is a checksum.
+    if re.search(r"0{5,}$", text):
+        return ""
+    return text
+
+
 def ensure_storygraph_columns(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
     for col in [STATUS_COL, MATCHED_QUERY_COL, NOTES_COL, COMPLETED_COL, SKIP_COL, OWNED_SG_COL, ADDED_DATE_COL, SHORT_TITLE_COL]:
@@ -251,8 +276,8 @@ def short_title(title: str) -> str:
 
 def build_search_queries(row: pd.Series) -> list[str]:
     asin   = clean_text(row.get("ASIN"))
-    isbn13 = clean_text(row.get("ISBN_13"))
-    isbn10 = clean_text(row.get("ISBN_10"))
+    isbn13 = clean_isbn(row.get("ISBN_13"))
+    isbn10 = clean_isbn(row.get("ISBN_10"))
     title  = clean_text(row.get("Title"))
     author = clean_text(row.get("Author"))
     st     = clean_text(row.get(SHORT_TITLE_COL)) or short_title(title)
@@ -431,6 +456,55 @@ def submit_search(page, query: str) -> bool:
     log(f"    [SEARCH] ERROR: Could not find search box")
 
 
+BOOK_HREF_RE = re.compile(r"^/books/[0-9a-f-]{36}/?$", re.IGNORECASE)
+
+# Anchor text that is page furniture rather than a book title.  These were
+# being scored against the title and could outrank the real result: on an ASIN
+# search for Desperate Measures, '29 editions' scored 0.375 and the actual
+# title scored 0.154.
+NON_BOOK_LINK_TEXT = {
+    "add a book", "manually add a book to our database",
+    "mark as owned", "add to \"up next\"", "to read", "29 editions",
+}
+
+
+def is_book_result_link(text: str, href: str) -> bool:
+    """True only for a link that leads to an actual book page.
+
+    Rejects /books/new, /books/<id>/editions, mark-as-owned helpers and
+    empty anchors — all of which appear on a results page and none of which
+    are the book.
+    """
+    href = clean_text(href)
+    if not BOOK_HREF_RE.match(href.split("?")[0]):
+        return False
+    text = clean_text(text)
+    if not text:
+        return False
+    low = text.lower()
+    if low in NON_BOOK_LINK_TEXT or low.endswith(" editions"):
+        return False
+    return True
+
+
+def is_identifier_query(query: str) -> bool:
+    """True for an ASIN or ISBN — a search term that identifies one book.
+
+    A hit from one of these needs no title check: the identifier already
+    picked the book out. Requiring a fuzzy title match on top is what made
+    an ASIN search for 'Wicked Villain series' reject the correct result,
+    because the spreadsheet holds the series name, not the book's title.
+    """
+    q = clean_text(query).replace("-", "").replace(" ", "")
+    if q.endswith(".0"):
+        q = q[:-2]
+    return bool(
+        re.fullmatch(r"B[0-9A-Z]{9}", q, re.IGNORECASE)   # ASIN
+        or re.fullmatch(r"\d{9}[\dXx]", q)                # ISBN-10
+        or re.fullmatch(r"\d{13}", q)                     # ISBN-13
+    )
+
+
 def _title_score(candidate: str, target: str) -> float:
     """
     Fuzzy similarity between candidate and target title.
@@ -452,7 +526,8 @@ def _title_score(candidate: str, target: str) -> float:
     return difflib.SequenceMatcher(None, a, b).ratio()
 
 
-def pick_first_matching_result(page, title: str, author: str) -> bool:
+def pick_first_matching_result(page, title: str, author: str,
+                               trust_identifier: bool = False) -> bool:
     title  = clean_text(title)
     author = clean_text(author)
     
@@ -502,6 +577,12 @@ def pick_first_matching_result(page, title: str, author: str) -> bool:
                     href = clean_text(link.get_attribute("href"))
                 except Exception as e:
                     log(f"    [PICK] [{i}] Error getting text/href: {e}")
+                    continue
+
+                # Skip page furniture — "Add a book", "29 editions",
+                # "mark as owned", empty anchors.  Scoring these against the
+                # title let them outrank the real result.
+                if not is_book_result_link(text, href):
                     continue
                 
                 if not href or ("/books/" not in href and "book" not in href.lower()):
@@ -606,6 +687,26 @@ def pick_first_matching_result(page, title: str, author: str) -> bool:
         for i, (score, author_ok, text, href) in enumerate(sorted_cands, 1):
             log(f"    [PICK]   {i}. score={score:.3f} author_ok={author_ok} | {text[:60]!r}")
     
+    # An ASIN/ISBN search that returns exactly one book has already identified
+    # it — the title check adds nothing and can only reject a correct result,
+    # e.g. when the spreadsheet holds a series name rather than the title.
+    if best_locator is None and trust_identifier:
+        distinct = {href for _s, _a, _t, href in all_candidates}
+        if len(distinct) == 1:
+            only_href = next(iter(distinct))
+            match = next(c for c in all_candidates if c[3] == only_href)
+            log(f"    [PICK] ✓ Single result for an ID search — taking it "
+                f"without a title check: {match[2][:80]!r}")
+            try:
+                page.goto(BASE_URL.rstrip("/") + only_href,
+                          wait_until="domcontentloaded", timeout=20000)
+                page.wait_for_timeout(2000)
+                log(f"    [PICK] ✓ Landed on: {page.url}")
+                return True
+            except Exception as e:
+                log(f"    [PICK] ERROR: Could not open {only_href}: {e}")
+                return False
+
     if best_locator is not None:
         log(f"    [PICK] ✓ Best match (score={best_score:.3f}): {best_text[:80]!r}")
         log(f"    [PICK] Clicking: {best_href}")
@@ -794,7 +895,9 @@ def process_book(page, row: pd.Series) -> dict:
             log(f"    [PROCESS] Search submission failed, trying next query")
             continue
 
-        picked = pick_first_matching_result(page, title, author)
+        picked = pick_first_matching_result(
+            page, title, author, trust_identifier=is_identifier_query(query)
+        )
 
         # If we didn't pick a result AND we're not already on a book page, try next query
         if not picked:
