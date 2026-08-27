@@ -41,11 +41,31 @@ if _config_path.exists():
     except Exception as e:
         print(f"[CONFIG] Could not load launcher config: {e}")
 
+_SG_CFG = _launcher_config.get("storygraph", {})
+
+
+def _cfg_days(key: str, default: int) -> int:
+    """Read a non-negative day count from the launcher config."""
+    try:
+        return max(0, int(_SG_CFG.get(key, default)))
+    except (TypeError, ValueError):
+        return default
+
+
 HEADLESS = False
-TEST_LIMIT = _launcher_config.get("storygraph", {}).get("max_books", 0)  # 0 = no limit
+TEST_LIMIT = _SG_CFG.get("max_books", 0)  # 0 = no limit
 SLEEP_BETWEEN_BOOKS = 1.5
 TITLE_MATCH_THRESHOLD = 0.60  # Lowered from 0.65 for better matching
-RECENCY_DAYS      = 0        # only process books added to Amazon within this many days (0 = no limit)
+
+# --- Reprocessing cooldowns (both in days, 0 disables) ---------------------
+# SKIP_IF_PROCESSED_WITHIN_DAYS is the blanket guard: a book touched inside
+# this window is left alone whatever happened last time, so running the tool
+# twice in a month doesn't redo the same work.
+# RETRY_FAILED_AFTER_DAYS is how long a *failed* attempt waits before it
+# becomes eligible again.  Successes never come back regardless — they are
+# excluded by their terminal status.
+SKIP_IF_PROCESSED_WITHIN_DAYS = _cfg_days("skip_if_processed_within_days", 30)
+RETRY_FAILED_AFTER_DAYS       = _cfg_days("retry_failed_after_days", 30)
 
 # Logging
 LOG_FILE = None
@@ -109,10 +129,81 @@ def ensure_storygraph_columns(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+STATUS_FAILED = "Failed"
+
+# Notes written by earlier versions, which marked failures Skipped/Completed=Yes
+# and so excluded them forever.  Matching on the note text lets those rows come
+# back through the retry cooldown instead of staying stuck.
+FAILURE_NOTE_MARKERS = (
+    "to read button not found",
+    "no asin/isbn/title available",
+    "no matching storygraph result",
+)
+
+
+def is_failed_attempt(row: pd.Series) -> bool:
+    """True if the last attempt failed, rather than succeeding or finding the
+    book already on the shelf.  Failures are retried once their cooldown is up."""
+    if clean_text(row.get(STATUS_COL)) in {STATUS_FAILED, "Not Found"}:
+        return True
+    notes = clean_text(row.get(NOTES_COL)).lower()
+    return any(marker in notes for marker in FAILURE_NOTE_MARKERS)
+
+
 def is_terminal_status(row: pd.Series) -> bool:
+    """True if this book is done for good and should never be reprocessed.
+
+    A failed attempt is never terminal — however it was recorded — so that the
+    retry cooldown decides when it comes back.
+    """
+    if is_failed_attempt(row):
+        return False
     status    = clean_text(row.get(STATUS_COL))
     completed = clean_text(row.get(COMPLETED_COL)).lower()
     return completed == "yes" or status in {"Added", "Skipped"}
+
+
+def days_since(value) -> float | None:
+    """Days since a date cell.  None when blank or unparseable (never processed)."""
+    text = clean_text(value)
+    if not text:
+        return None
+    try:
+        parsed = pd.to_datetime(text)
+    except Exception:
+        return None
+    if pd.isna(parsed):
+        return None
+    return (datetime.datetime.now() - parsed.to_pydatetime()).total_seconds() / 86400.0
+
+
+def apply_cooldowns(df: pd.DataFrame) -> pd.DataFrame:
+    """Drop books that were processed too recently to be worth redoing."""
+    if ADDED_DATE_COL not in df.columns or df.empty:
+        return df
+
+    ages = df[ADDED_DATE_COL].apply(days_since)
+
+    if SKIP_IF_PROCESSED_WITHIN_DAYS:
+        recent = ages.apply(
+            lambda a: a is not None and a < SKIP_IF_PROCESSED_WITHIN_DAYS
+        )
+        if recent.any():
+            log(f"  [COOLDOWN] Skipping {int(recent.sum())} book(s) processed in the "
+                f"last {SKIP_IF_PROCESSED_WITHIN_DAYS} day(s)")
+            df   = df[~recent].copy()
+            ages = ages[~recent]
+
+    if RETRY_FAILED_AFTER_DAYS and not df.empty:
+        too_soon = df.apply(is_failed_attempt, axis=1) & ages.apply(
+            lambda a: a is not None and a < RETRY_FAILED_AFTER_DAYS
+        )
+        if too_soon.any():
+            log(f"  [COOLDOWN] {int(too_soon.sum())} failed book(s) not due for retry "
+                f"yet (retry after {RETRY_FAILED_AFTER_DAYS} days)")
+            df = df[~too_soon].copy()
+
+    return df
 
 
 def should_skip_storygraph(row: pd.Series) -> bool:
@@ -624,9 +715,9 @@ def process_book(page, row: pd.Series) -> dict:
     }
 
     if not queries:
-        result[STATUS_COL]    = "Skipped"
+        result[STATUS_COL]    = STATUS_FAILED
         result[NOTES_COL]     = "No ASIN/ISBN/title available"
-        result[COMPLETED_COL] = "Yes"
+        result[COMPLETED_COL] = "No"   # retry once metadata fills in
         return result
 
     log(f"    [PROCESS] Trying {len(queries)} queries: {queries}")
@@ -671,9 +762,9 @@ def process_book(page, row: pd.Series) -> dict:
             result[NOTES_COL]     = "Clicked To Read"
             result[COMPLETED_COL] = "Yes"
         else:
-            result[STATUS_COL]    = "Skipped"
+            result[STATUS_COL]    = STATUS_FAILED
             result[NOTES_COL]     = "Book page found, but To Read button not found"
-            result[COMPLETED_COL] = "Yes"
+            result[COMPLETED_COL] = "No"   # retryable: often a slow load or markup change
 
         # ── Owned (only attempted when Owned = Yes in the spreadsheet) ───
         if owned:
@@ -779,38 +870,9 @@ def main():
     if OWNED_COL in df.columns:
         df = df[df[OWNED_COL].apply(clean_text).str.lower() == "yes"].copy()
 
-    # Only process books whose StoryGraph Date is within RECENCY_DAYS.
-    if RECENCY_DAYS and ADDED_DATE_COL in df_all.columns:
-        cutoff = datetime.datetime.now() - datetime.timedelta(days=RECENCY_DAYS)
-        today  = datetime.datetime.now().strftime("%Y-%m-%d")
-
-        def _is_recent(val) -> bool:
-            v = clean_text(val)
-            if not v:
-                return True
-            try:
-                return pd.to_datetime(v) >= cutoff
-            except Exception:
-                return True
-
-        if ADDED_DATE_COL in df.columns:
-            too_old_mask = ~df[ADDED_DATE_COL].apply(_is_recent)
-            n_old = too_old_mask.sum()
-            if n_old:
-                if "DuplicateKey" in df.columns:
-                    old_keys = set(df.loc[too_old_mask, "DuplicateKey"].apply(clean_text))
-                    reset_mask = df_all["DuplicateKey"].apply(clean_text).isin(old_keys)
-                else:
-                    reset_mask = too_old_mask.reindex(df_all.index, fill_value=False)
-                df_all.loc[reset_mask, ADDED_DATE_COL] = today
-                log(f"  [DATE FILTER] Reset date for {n_old} book(s) older than {RECENCY_DAYS} days")
-                save_excel(df_all)
-
-            before = len(df)
-            df = df[~too_old_mask].copy()
-            skipped = before - len(df)
-            if skipped:
-                log(f"  [DATE FILTER] Skipping {skipped} book(s) this run")
+    # Cooldowns: skip anything processed too recently, and hold failed
+    # attempts until their retry interval is up.
+    df = apply_cooldowns(df)
 
     if TEST_LIMIT:
         df = df.head(TEST_LIMIT).copy()

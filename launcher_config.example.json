@@ -31,7 +31,11 @@
   },
 
   "storygraph": {
-    "max_books": 0
+    "max_books": 0,
+
+    "_cooldown_comment": "Both in days; 0 disables. skip_if_processed_within_days is the blanket guard so running the tool twice in a month doesn't redo the same work. retry_failed_after_days is how long a failed attempt waits before becoming eligible again. Books that were added, or were already on your shelf, are never reprocessed regardless of these.",
+    "skip_if_processed_within_days": 30,
+    "retry_failed_after_days": 30
   },
 
   "reenrich": {

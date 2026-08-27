@@ -90,6 +90,8 @@ DEFAULT_CONFIG = {
     },
     "storygraph": {
         "max_books": 0,  # 0 = all books
+        "skip_if_processed_within_days": 30,  # 0 = no cooldown
+        "retry_failed_after_days": 30,        # 0 = retry failures immediately
     },
 }
 
@@ -679,7 +681,36 @@ class SettingsDialog(tk.Toplevel):
         self.sg_vars["max_books"] = tk.IntVar(value=self.config.get("storygraph", {}).get("max_books", 0))
         ttk.Spinbox(parent, from_=0, to=999, textvariable=self.sg_vars["max_books"], width=10).grid(row=0, column=1, sticky="w", pady=5)
         ttk.Label(parent, text="(0 = all books)", font=("", 8), foreground="gray").grid(row=0, column=2, sticky="w", padx=5)
-        
+
+        ttk.Separator(parent, orient="horizontal").grid(
+            row=1, column=0, columnspan=3, sticky="ew", pady=(12, 6))
+        ttk.Label(parent, text="Reprocessing", font=("", 9, "bold")).grid(
+            row=2, column=0, sticky="w")
+
+        ttk.Label(parent, text="Skip if processed within:").grid(
+            row=3, column=0, sticky="w", pady=(5, 0))
+        self.sg_vars["skip_if_processed_within_days"] = tk.IntVar(
+            value=self.config.get("storygraph", {}).get("skip_if_processed_within_days", 30))
+        ttk.Spinbox(parent, from_=0, to=3650,
+                    textvariable=self.sg_vars["skip_if_processed_within_days"],
+                    width=10).grid(row=3, column=1, sticky="w", pady=(5, 0))
+        ttk.Label(parent, text="days  (0 = no cooldown)", font=("", 8),
+                  foreground="gray").grid(row=3, column=2, sticky="w", padx=5)
+        ttk.Label(parent, text="Any book touched this recently is left alone, whatever happened last time",
+                  font=("", 8), foreground="gray").grid(row=4, column=1, columnspan=2, sticky="w")
+
+        ttk.Label(parent, text="Retry failed books after:").grid(
+            row=5, column=0, sticky="w", pady=(5, 0))
+        self.sg_vars["retry_failed_after_days"] = tk.IntVar(
+            value=self.config.get("storygraph", {}).get("retry_failed_after_days", 30))
+        ttk.Spinbox(parent, from_=0, to=3650,
+                    textvariable=self.sg_vars["retry_failed_after_days"],
+                    width=10).grid(row=5, column=1, sticky="w", pady=(5, 0))
+        ttk.Label(parent, text="days  (0 = retry immediately)", font=("", 8),
+                  foreground="gray").grid(row=5, column=2, sticky="w", padx=5)
+        ttk.Label(parent, text="Books added or already on your shelf are never redone",
+                  font=("", 8), foreground="gray").grid(row=6, column=1, columnspan=2, sticky="w")
+
         parent.columnconfigure(1, weight=1)
     
     def save(self):
