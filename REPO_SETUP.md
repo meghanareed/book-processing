@@ -9,7 +9,7 @@ Two questions answered here:
 
 ## 1. File-by-file evaluation
 
-### ✅ Required to run — keep in the repo (13 files)
+### ✅ Required to run — keep in the repo (11 files)
 
 | File | Role |
 |---|---|
@@ -21,7 +21,6 @@ Two questions answered here:
 | `reenrich_existing.py` | "Fill Missing Metadata" — backfills PageCount / Genre / Tropes. |
 | `Launcher.bat` | Double-click entry point; finds Python, starts the GUI. |
 | `check_books_to_process.py` + `check_books.bat` | Diagnostic: how many books are queued. |
-| `test_single_book.py` + `test_single_book.bat` | Diagnostic: run StoryGraph flow on one book. |
 | `storygraph_diagnostic.py` | Diagnostic: StoryGraph selector troubleshooting. |
 | `view_latest_log.bat` | "View Latest Log" button target. |
 
@@ -130,7 +129,7 @@ elif click_to_read(page):
     result[NOTES_COL]     = "Clicked To Read"
 ```
 
-All nine `.py` files now compile cleanly.
+All eight `.py` files now compile cleanly.
 
 ### ⚠️ (c) The hardcoded username
 
