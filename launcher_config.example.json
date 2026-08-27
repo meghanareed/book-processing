@@ -14,6 +14,11 @@
     "enable_metadata_enrichment": true,
     "enable_asin_lookup": true,
 
+    "_retry_comment": "Rate-limit backoff. If you hit the tokens-per-minute cap constantly, lower max_workers first — fewer parallel requests spend the budget slower. Images that still fail after retry_max_attempts stay in incoming_folder and are retried on the next run.",
+    "retry_max_attempts": 6,
+    "retry_base_seconds": 5.0,
+    "retry_max_sleep": 60.0,
+
     "_folders_comment": "incoming_folder is scanned top level only, not recursively. sync_source_folder is scanned recursively first and new files are copied into incoming_folder. data_folder is where books_output.xlsx and the run CSVs live — keep it matching the other scripts.",
     "incoming_folder": "C:\\Users\\megha\\OneDrive\\Pictures\\Samsung Gallery\\DCIM\\Books",
     "sync_source_folder": "C:\\Users\\megha\\OneDrive\\Pictures\\Samsung Gallery\\DCIM\\Books 2.0",

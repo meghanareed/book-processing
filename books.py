@@ -82,6 +82,13 @@ ENABLE_METADATA_ENRICHMENT = bool(_BOOKS_CFG.get("enable_metadata_enrichment", T
 ENABLE_ASIN_LOOKUP = bool(_BOOKS_CFG.get("enable_asin_lookup", True))
 ENABLE_CONTENT_ENRICHMENT = True
 
+# Retry on rate limits / transient API failures.  Overridable in
+# launcher_config.json -> books_py.  Lower Max Workers in Settings if you hit
+# the token-per-minute cap constantly; fewer parallel requests spend it slower.
+RETRY_MAX_ATTEMPTS = int(_BOOKS_CFG.get("retry_max_attempts") or 6)
+RETRY_BASE_SECONDS = float(_BOOKS_CFG.get("retry_base_seconds") or 5.0)
+RETRY_MAX_SLEEP = float(_BOOKS_CFG.get("retry_max_sleep") or 60.0)
+
 LOOKUP_TIMEOUT_SECONDS = 20
 LOOKUP_SLEEP_SECONDS = 0.2
 AMAZON_LOOKUP_SLEEP_SECONDS = 0.8
@@ -343,6 +350,61 @@ def append_sync_log(rows: list[dict]) -> None:
 # =========================
 # IMAGE EXTRACTION
 # =========================
+class TransientAPIError(Exception):
+    """An API failure worth retrying on a later run (rate limit, timeout, 5xx)."""
+
+
+def _retry_hint_seconds(message: str) -> float:
+    """Pull the 'Please try again in 229ms' hint out of an API error message."""
+    match = re.search(r"try again in\s*([\d.]+)\s*(ms|s)\b", message, re.IGNORECASE)
+    if not match:
+        return 0.0
+    value = float(match.group(1))
+    return value / 1000.0 if match.group(2).lower() == "ms" else value
+
+
+def _is_retryable(exc: Exception) -> bool:
+    """True for rate limits, timeouts and 5xx — anything that may succeed later."""
+    if getattr(exc, "status_code", None) in (429, 500, 502, 503, 504):
+        return True
+    if type(exc).__name__ in (
+        "RateLimitError", "APITimeoutError", "APIConnectionError",
+        "InternalServerError", "APIStatusError",
+    ):
+        return True
+    text = str(exc).lower()
+    return "rate limit" in text or "rate_limit_exceeded" in text or "error code: 429" in text
+
+
+def call_with_retry(func, what: str):
+    """Run func(), backing off on transient API errors.
+
+    The 'try again in 229ms' hint assumes you are the only caller; with several
+    worker threads the token-per-minute window needs longer to drain, so the
+    wait is at least RETRY_BASE_SECONDS and doubles each attempt.  Jitter keeps
+    the workers from retrying in lockstep.
+    """
+    delay = RETRY_BASE_SECONDS
+    for attempt in range(1, RETRY_MAX_ATTEMPTS + 1):
+        try:
+            return func()
+        except Exception as exc:
+            if not _is_retryable(exc):
+                raise
+            if attempt == RETRY_MAX_ATTEMPTS:
+                raise TransientAPIError(
+                    f"{type(exc).__name__} after {attempt} attempts: {exc}"
+                ) from exc
+            wait = max(_retry_hint_seconds(str(exc)), delay) + random.uniform(0, 1.5)
+            print(
+                f"[RETRY] {what}: rate limited — waiting {wait:.1f}s "
+                f"(attempt {attempt}/{RETRY_MAX_ATTEMPTS})",
+                flush=True,
+            )
+            time.sleep(wait)
+            delay = min(delay * 2, RETRY_MAX_SLEEP)
+
+
 def extract_books_from_image(image_path: Path) -> list[dict]:
     b64 = preprocess_image_to_base64(image_path)
 
@@ -380,25 +442,28 @@ Rules:
 - Do not guess wildly. Mark uncertain items with lower confidence.
 """
 
-    response = client.responses.create(
-        model=MODEL,
-        input=[
-            {
-                "role": "user",
-                "content": [
-                    {"type": "input_text", "text": prompt},
-                    {"type": "input_image", "image_url": f"data:image/jpeg;base64,{b64}"}
-                ],
-            }
-        ],
-        text={
-            "format": {
-                "type": "json_schema",
-                "name": "book_extraction",
-                "schema": schema,
-                "strict": True
-            }
-        },
+    response = call_with_retry(
+        lambda: client.responses.create(
+            model=MODEL,
+            input=[
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "input_text", "text": prompt},
+                        {"type": "input_image", "image_url": f"data:image/jpeg;base64,{b64}"}
+                    ],
+                }
+            ],
+            text={
+                "format": {
+                    "type": "json_schema",
+                    "name": "book_extraction",
+                    "schema": schema,
+                    "strict": True
+                }
+            },
+        ),
+        what=image_path.name,
     )
 
     parsed = json.loads(response.output_text)
@@ -407,14 +472,19 @@ Rules:
 # =========================
 # FILE PROCESSING
 # =========================
-def process_one_file(image_path: Path) -> tuple[str, list[dict], str | None]:
+def process_one_file(image_path: Path) -> tuple[str, list[dict], str | None, bool]:
+    """Returns (filename, rows, error_message, retry_later).
+
+    retry_later marks a failure the image should be kept in the incoming folder
+    for — a rate limit or outage, not a problem with the image itself.
+    """
     filename = image_path.name
 
     try:
         books = extract_books_from_image(image_path)
 
         if not books:
-            return filename, [], "No books found"
+            return filename, [], "No books found", False
 
         rows = []
         for book in books:
@@ -451,12 +521,15 @@ def process_one_file(image_path: Path) -> tuple[str, list[dict], str | None]:
             })
 
         if not rows:
-            return filename, [], "No valid rows returned"
+            return filename, [], "No valid rows returned", False
 
-        return filename, rows, None
+        return filename, rows, None, False
 
+    except TransientAPIError as e:
+        # Rate limit or outage — keep the image so a later run can retry it.
+        return filename, [], str(e), True
     except Exception as e:
-        return filename, [], str(e)
+        return filename, [], str(e), _is_retryable(e)
 
 
 def move_safe(src: Path, dest_folder: Path) -> None:
@@ -1162,6 +1235,8 @@ def main():
 
     print(f"Found {len(incoming_files)} file(s) to process.")
 
+    deferred: list[str] = []   # rate-limited images left in place for the next run
+
     completed_duplicate_keys = get_completed_duplicate_keys()
     if completed_duplicate_keys:
         print(f"Found {len(completed_duplicate_keys)} completed StoryGraph duplicate key(s) to skip.")
@@ -1174,7 +1249,7 @@ def main():
             filename = image_path.name
 
             try:
-                filename, rows, error_message = future.result()
+                filename, rows, error_message, retry_later = future.result()
 
                 if rows:
                     rows_to_append = []
@@ -1191,6 +1266,11 @@ def main():
                         print(f"Processed: {filename} (0 new books; all matched completed duplicates)")
 
                     move_safe(image_path, PROCESSED_FOLDER)
+                elif retry_later:
+                    # Left in the incoming folder on purpose: the next run
+                    # picks it up once the rate limit window has cleared.
+                    deferred.append(filename)
+                    print(f"Deferred: {filename} - {error_message}")
                 else:
                     append_error(filename, error_message or "Unknown error")
                     move_safe(image_path, SKIPPED_FOLDER)
@@ -1204,6 +1284,14 @@ def main():
 
     build_excel_from_progress()
     print(f"Done. Excel created: {OUTPUT_XLSX}")
+
+    if deferred:
+        print(
+            f"\n{len(deferred)} image(s) were rate limited and left in "
+            f"{INCOMING_FOLDER} — run Process Screenshots again to pick them up."
+        )
+        for name in deferred:
+            print(f"  deferred: {name}")
 
 
 if __name__ == "__main__":
