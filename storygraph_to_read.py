@@ -137,6 +137,7 @@ OWNED_SG_COL      = "StoryGraph Owned"         # tracks whether we marked owned 
 ADDED_DATE_COL    = "StoryGraph Date"            # date this row was last queued for StoryGraph processing
 SHORT_TITLE_COL   = "Short Title"                 # title stripped of subtitle (everything before first :)
 READ_COL          = "Read"                       # set to "Yes" when SG shows book as already Read
+DECISION_COL      = "Selector Decision"           # Read / Ignored / Removed, set by apply_reading_log.py
 
 
 def clean_text(value) -> str:
@@ -176,7 +177,7 @@ def clean_isbn(value) -> str:
 
 def ensure_storygraph_columns(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
-    for col in [STATUS_COL, MATCHED_QUERY_COL, NOTES_COL, COMPLETED_COL, SKIP_COL, OWNED_SG_COL, ADDED_DATE_COL, SHORT_TITLE_COL]:
+    for col in [STATUS_COL, MATCHED_QUERY_COL, NOTES_COL, COMPLETED_COL, SKIP_COL, OWNED_SG_COL, ADDED_DATE_COL, SHORT_TITLE_COL, DECISION_COL]:
         if col not in df.columns:
             df[col] = ""
     return df
@@ -264,7 +265,11 @@ def apply_cooldowns(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def should_skip_storygraph(row: pd.Series) -> bool:
-    return clean_text(row.get(SKIP_COL)).lower() == "yes"
+    if clean_text(row.get(SKIP_COL)).lower() == "yes":
+        return True
+    # Any selector decision — Read, Ignored or Removed — means you have already
+    # dealt with this book and don't want it pushed to your to-read pile.
+    return clean_text(row.get(DECISION_COL)) != ""
 
 
 def is_owned(row: pd.Series) -> bool:

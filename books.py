@@ -100,7 +100,7 @@ TEXT_COLUMNS = [
     "Description", "Genre", "AgeRange", "Tropes", "Triggers",
     "Metadata Enriched",
     "StoryGraph Status", "StoryGraph Matched Query", "StoryGraph Notes", "StoryGraph Completed",
-    "DuplicateKey", "Last Enriched"
+    "DuplicateKey", "Last Enriched", "Selector Decision"
 ]
 
 ALL_BOOKS_COLUMNS = [
@@ -109,7 +109,7 @@ ALL_BOOKS_COLUMNS = [
     "Description", "Genre", "PageCount", "LengthCategory", "AgeRange", "Tropes", "Triggers",
     "Metadata Enriched",
     "StoryGraph Status", "StoryGraph Matched Query", "StoryGraph Notes", "StoryGraph Completed",
-    "DuplicateKey", "Last Enriched"
+    "DuplicateKey", "Last Enriched", "Selector Decision"
 ]
 
 # =========================

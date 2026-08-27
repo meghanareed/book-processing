@@ -61,15 +61,31 @@ import openpyxl
 # Config
 # --------------------------------------------------------------------------- #
 SCRIPT_DIR = Path(__file__).resolve().parent
-BOOKS_OUTPUT = SCRIPT_DIR / "books_output.xlsx"
-READING_LOG = SCRIPT_DIR / "my-reading-log.xlsx"
+DATA_DIR = Path(r"C:\Users\megha\OneDrive\Documents\Reading")
+
+
+def _data_file(name: str) -> Path:
+    """Spreadsheets live in the data folder; fall back to beside the code."""
+    candidate = DATA_DIR / name
+    return candidate if candidate.exists() else SCRIPT_DIR / name
+
+
+BOOKS_OUTPUT = _data_file("books_output.xlsx")
+READING_LOG = _data_file("my-reading-log.xlsx")
 
 # 1-based column index in books_output.xlsx for the "Read" column.
 # Column Y == column 25.  We verify the header on load.
 READ_COL_INDEX = 25
 READ_COL_HEADER = "Read"
 
+# Records what you chose in the selector, kept apart from "Read" so that
+# ignoring or removing a book no longer claims you read it.  Every non-empty
+# value means "stop offering me this book"; only "Read" also sets Read = Yes.
+DECISION_COL_HEADER = "Selector Decision"
+
 VALID_DECISIONS = {"Read", "Ignored", "Removed"}
+# Decisions that mean you actually finished the book.
+READ_DECISIONS = {"Read"}
 
 
 # --------------------------------------------------------------------------- #
@@ -175,9 +191,17 @@ def update_books_output(decisions: list[dict]) -> tuple[int, int]:
             if t or a:
                 title_author_idx[(t, a)] = r
 
+    # The decision column is new, so add it the first time this runs.
+    c_decision = col(DECISION_COL_HEADER)
+    if c_decision is None:
+        c_decision = ws.max_column + 1
+        ws.cell(row=1, column=c_decision).value = DECISION_COL_HEADER
+        print(f"  Added '{DECISION_COL_HEADER}' column at position {c_decision}")
+
     # Match each decision and update
     updated = 0
     missing = 0
+    marked_read = 0
 
     for d in decisions:
         asin = norm(d.get("asin"))
@@ -200,14 +224,20 @@ def update_books_output(decisions: list[dict]) -> tuple[int, int]:
             row_num = title_author_idx[(title, author)]
 
         if row_num:
-            ws.cell(row=row_num, column=READ_COL_INDEX).value = "Yes"
+            ws.cell(row=row_num, column=c_decision).value = d["decision"]
+            # Only a genuine Read marks the book as read.  Ignored and Removed
+            # stop it being offered again via the decision column instead.
+            if d["decision"] in READ_DECISIONS:
+                ws.cell(row=row_num, column=READ_COL_INDEX).value = "Yes"
+                marked_read += 1
             updated += 1
         else:
             missing += 1
             print(f"  no match: {d.get('title')} by {d.get('author')}")
 
     wb.save(BOOKS_OUTPUT)
-    print(f"  [OK] Updated {updated} books in {BOOKS_OUTPUT.name}")
+    print(f"  [OK] Recorded {updated} decisions in {BOOKS_OUTPUT.name} "
+          f"({marked_read} also marked Read=Yes)")
     if missing:
         print(f"  [WARN] Could not find {missing} books")
 
@@ -261,7 +291,83 @@ def update_reading_log(decisions: list[dict]) -> int:
 # --------------------------------------------------------------------------- #
 # Main
 # --------------------------------------------------------------------------- #
+def backfill_decisions(apply_changes: bool) -> None:
+    """Recover past decisions from my-reading-log.xlsx.
+
+    Earlier versions set Read = Yes for Ignored and Removed too, so the catalog
+    claims you read books you only dismissed.  The reading log kept the real
+    status, so it can say which is which.  Rows whose Read = Yes came from
+    somewhere else (finishing a book, or StoryGraph reporting it as read) have
+    no log entry and are left alone.
+    """
+    if not BOOKS_OUTPUT.exists() or not READING_LOG.exists():
+        print("  Need both books_output.xlsx and my-reading-log.xlsx — skipping.")
+        return
+
+    log_wb = openpyxl.load_workbook(READING_LOG, read_only=True)
+    log_ws = log_wb.active
+    logged: dict[tuple[str, str], str] = {}
+    for r in log_ws.iter_rows(min_row=2, values_only=True):
+        if not r:
+            continue
+        title, author, status = norm(r[0]), norm(r[1]), (r[3] or "")
+        status = str(status).strip().capitalize()
+        if status not in VALID_DECISIONS:
+            continue
+        # A later "Read" outranks an earlier dismissal of the same book.
+        key = (title, author)
+        if logged.get(key) not in READ_DECISIONS:
+            logged[key] = status
+    log_wb.close()
+    print(f"  Read {len(logged)} decision(s) from {READING_LOG.name}")
+
+    wb = openpyxl.load_workbook(BOOKS_OUTPUT)
+    ws = wb.active
+
+    headers = {str(ws.cell(row=1, column=c).value).strip(): c
+               for c in range(1, ws.max_column + 1) if ws.cell(row=1, column=c).value}
+    c_decision = headers.get(DECISION_COL_HEADER)
+    if c_decision is None:
+        c_decision = ws.max_column + 1
+        ws.cell(row=1, column=c_decision).value = DECISION_COL_HEADER
+        print(f"  Added '{DECISION_COL_HEADER}' column at position {c_decision}")
+    c_title, c_author = headers.get("Title"), headers.get("Author")
+    if not c_title or not c_author:
+        print("  Could not find Title/Author columns — skipping.")
+        return
+
+    tagged = cleared = 0
+    for r in range(2, ws.max_row + 1):
+        key = (norm(ws.cell(row=r, column=c_title).value),
+               norm(ws.cell(row=r, column=c_author).value))
+        status = logged.get(key)
+        if not status:
+            continue
+        if not norm(ws.cell(row=r, column=c_decision).value):
+            ws.cell(row=r, column=c_decision).value = status
+            tagged += 1
+        if status not in READ_DECISIONS:
+            read_cell = ws.cell(row=r, column=READ_COL_INDEX)
+            if norm(read_cell.value) == "yes":
+                read_cell.value = ""
+                cleared += 1
+
+    print(f"  {tagged} row(s) tagged with a decision")
+    print(f"  {cleared} row(s) had Read=Yes cleared (Ignored/Removed, not actually read)")
+
+    if apply_changes:
+        wb.save(BOOKS_OUTPUT)
+        print(f"  [OK] Saved {BOOKS_OUTPUT.name}")
+    else:
+        print("  DRY RUN — nothing written. Re-run with --backfill --apply to save.")
+
+
 def main() -> None:
+    if "--backfill" in sys.argv:
+        print(f"Backfilling decisions in {BOOKS_OUTPUT.name} from {READING_LOG.name}")
+        backfill_decisions(apply_changes="--apply" in sys.argv)
+        return
+
     path = find_decisions_file(sys.argv[1] if len(sys.argv) > 1 else None)
     print(f"Reading decisions from: {path.name}")
 
