@@ -1283,7 +1283,9 @@ def main():
                 print(f"Skipped: {filename} - {e}")
 
     build_excel_from_progress()
-    print(f"Done. Excel created: {OUTPUT_XLSX}")
+    # "created" was misleading: the workbook is merged with the existing All
+    # Books sheet and rewritten in place, not created from scratch.
+    print(f"Done. Excel updated: {OUTPUT_XLSX}")
 
     if deferred:
         print(

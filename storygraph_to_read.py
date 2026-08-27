@@ -875,7 +875,15 @@ def main():
     df = apply_cooldowns(df)
 
     if TEST_LIMIT:
-        df = df.head(TEST_LIMIT).copy()
+        # Random sample rather than the first N rows: a plain head() always
+        # works the same end of the sheet, so a small limit would keep
+        # revisiting the oldest entries.  sort_index() puts the chosen books
+        # back into sheet order so the run log reads top to bottom.
+        if TEST_LIMIT < len(df):
+            log(f"  [LIMIT] Random sample of {TEST_LIMIT} from {len(df)} eligible book(s)")
+            df = df.sample(n=TEST_LIMIT).sort_index().copy()
+        else:
+            df = df.copy()
 
     if df.empty:
         log("No rows need StoryGraph processing.")

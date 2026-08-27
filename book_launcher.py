@@ -680,7 +680,8 @@ class SettingsDialog(tk.Toplevel):
         ttk.Label(parent, text="Max Books to Add:", font=("", 9, "bold")).grid(row=0, column=0, sticky="w", pady=5)
         self.sg_vars["max_books"] = tk.IntVar(value=self.config.get("storygraph", {}).get("max_books", 0))
         ttk.Spinbox(parent, from_=0, to=999, textvariable=self.sg_vars["max_books"], width=10).grid(row=0, column=1, sticky="w", pady=5)
-        ttk.Label(parent, text="(0 = all books)", font=("", 8), foreground="gray").grid(row=0, column=2, sticky="w", padx=5)
+        ttk.Label(parent, text="(0 = all books, otherwise a random sample)",
+                  font=("", 8), foreground="gray").grid(row=0, column=2, sticky="w", padx=5)
 
         ttk.Separator(parent, orient="horizontal").grid(
             row=1, column=0, columnspan=3, sticky="ew", pady=(12, 6))
