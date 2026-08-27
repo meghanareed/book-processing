@@ -863,59 +863,64 @@ def click_to_read(page) -> bool:
     return False
 
 
-def remove_from_to_read(page) -> bool:
-    """Take the book off the To-Read pile.
+def accept_dialogs(page) -> None:
+    """Auto-accept StoryGraph's confirm() prompts.
 
-    StoryGraph exposes this as a delete link, much like un-marking owned, and
-    sometimes only behind the chevron next to the status pill.  Several shapes
-    are tried because the markup has changed before; the log names whichever
-    one worked so it can be narrowed later.
+    The remove links are Rails UJS with data-confirm, so clicking one raises a
+    native dialog.  Playwright dismisses dialogs by default — that is Cancel —
+    so without this the click appears to work and nothing is removed.
     """
-    remove_selectors = [
-        'a[href*="/remove-from-to-read"]',
-        'a[href*="/remove-to-read"]',
-        'a[href*="remove"][href*="to-read"]',
-        'a.remove-from-to-read-link',
-        'a[data-method="delete"]:has-text("to read")',
-        'button[title="Remove from your To-Read Pile"]',
-        'button[aria-label="Remove from your To-Read Pile"]',
-    ]
+    def handle(dialog):
+        log(f"    [DIALOG] Accepting: {dialog.message[:80]!r}")
+        try:
+            dialog.accept()
+        except Exception:
+            pass
 
-    def try_selectors(selectors, label) -> bool:
-        for selector in selectors:
-            try:
-                locator = page.locator(selector).first
-                if locator.count() > 0 and locator.is_visible(timeout=1500):
-                    log(f"    [REMOVE] Clicking {label} (found: {selector})")
-                    locator.click()
-                    page.wait_for_timeout(2000)
-                    return True
-            except Exception:
-                continue
-        return False
+    page.on("dialog", handle)
 
-    if try_selectors(remove_selectors, "remove link"):
-        return not book_already_to_read(page)
 
-    # Not on the page directly — open the status dropdown and look again.
-    dropdown_selectors = [
-        'button.read-status-label + button',            # chevron beside the pill
-        'button[aria-haspopup="true"]:near(.read-status-label)',
-        '.read-status-dropdown button',
-        'button[aria-expanded="false"]:has-text("to read")',
-    ]
-    if try_selectors(dropdown_selectors, "status dropdown"):
-        menu_selectors = remove_selectors + [
-            '*:has-text("remove from to-read")',
-            '*:has-text("remove from shelf")',
-            'a:has-text("remove")',
-            'button:has-text("remove")',
-        ]
-        if try_selectors(menu_selectors, "remove item"):
-            return not book_already_to_read(page)
-
-    log("    [REMOVE] ERROR: Could not find a control to remove it from To-Read")
+def _click_first(page, selectors, label) -> bool:
+    for selector in selectors:
+        try:
+            locator = page.locator(selector).first
+            if locator.count() > 0 and locator.is_visible(timeout=1500):
+                log(f"    [REMOVE] Clicking {label} (found: {selector})")
+                locator.click()
+                page.wait_for_timeout(2000)
+                return True
+        except Exception:
+            continue
     return False
+
+
+def remove_from_lists(page) -> bool:
+    """Click 'remove book', which clears the book from every StoryGraph list."""
+    selectors = [
+        'button[data-action*="remove-book#checkAndRemove"]',
+        'button[data-remove-path]',
+        'button[title="Remove book from your lists"]',
+        'button[aria-label="Remove book from your lists"]',
+        'button.read-status-button:has-text("remove book")',
+    ]
+    if not _click_first(page, selectors, "remove book"):
+        log("    [REMOVE] ERROR: Could not find the 'remove book' button")
+        return False
+    # The button may itself raise a confirm; accept_dialogs handles it.
+    return not book_already_to_read(page)
+
+
+def unmark_owned(page) -> bool:
+    """Clear the owned mark.  Fires a confirm() that accept_dialogs answers."""
+    selectors = [
+        'a.remove-from-owned-link',
+        'a[href*="/remove-owned-book"]',
+        'a[data-method="delete"][data-confirm*="owned"]',
+    ]
+    if not _click_first(page, selectors, "remove from owned"):
+        log("    [REMOVE] ERROR: Could not find the owned link")
+        return False
+    return not book_already_owned(page)
 
 
 def book_already_owned(page) -> bool:
@@ -1026,23 +1031,41 @@ def process_book(page, row: pd.Series) -> dict:
         result[MATCHED_QUERY_COL] = query
         log(f"    [PROCESS] Processing book page: {page.url}")
 
-        # ── Removed in the selector: take it off the To-Read pile ─────────
+        # ── Removed in the selector: take it off your StoryGraph lists ────
         if needs_removal(row):
-            if book_already_to_read(page):
-                if remove_from_to_read(page):
-                    result[STATUS_COL]    = "Removed"
-                    result[NOTES_COL]     = "Removed from To-Read pile"
-                    result[COMPLETED_COL] = "Yes"
+            on_to_read = book_already_to_read(page)
+            was_owned  = book_already_owned(page)
+            notes, failed = [], False
+
+            if on_to_read:
+                if remove_from_lists(page):
+                    notes.append("Removed from To-Read")
                     log("    [PROCESS] Removed from To-Read")
                 else:
-                    result[STATUS_COL]    = STATUS_FAILED
-                    result[NOTES_COL]     = "On To-Read but remove control not found"
-                    result[COMPLETED_COL] = "No"
+                    notes.append("On To-Read but 'remove book' not found")
+                    failed = True
             else:
-                result[STATUS_COL]    = "Removed"
-                result[NOTES_COL]     = "Marked Removed; was not on To-Read pile"
-                result[COMPLETED_COL] = "Yes"
-                log("    [PROCESS] Not on To-Read — nothing to remove")
+                notes.append("Was not on To-Read")
+
+            # "remove book" clears the reading lists, but owned is tracked
+            # separately — re-check rather than clicking a link that has
+            # already gone.
+            if was_owned:
+                if book_already_owned(page):
+                    if unmark_owned(page):
+                        notes.append("Unmarked owned")
+                        result[OWNED_SG_COL] = "Removed"
+                        log("    [PROCESS] Unmarked owned")
+                    else:
+                        notes.append("Owned mark could not be cleared")
+                        failed = True
+                else:
+                    notes.append("Owned cleared by remove book")
+                    result[OWNED_SG_COL] = "Removed"
+
+            result[STATUS_COL]    = STATUS_FAILED if failed else "Removed"
+            result[NOTES_COL]     = " | ".join(notes)
+            result[COMPLETED_COL] = "No" if failed else "Yes"
             return result
 
         # ── Already Read on StoryGraph? ───────────────────────────────────
@@ -1215,6 +1238,7 @@ def main():
     with sync_playwright() as p:
         context = launch_browser(p)
         page    = context.pages[0] if context.pages else context.new_page()
+        accept_dialogs(page)
 
         wait_for_user_login(page)
 
