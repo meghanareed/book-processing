@@ -100,6 +100,7 @@ DEFAULT_CONFIG = {
         "skip_if_processed_within_days": 30,  # 0 = no cooldown
         "retry_failed_after_days": 30,        # 0 = retry failures immediately
         "removals_only": False,               # skip pending adds, do removals only
+        "username": "meghanareed",            # for the read-shelf sync URL
     },
 }
 
@@ -747,6 +748,15 @@ class SettingsDialog(tk.Toplevel):
             row=8, column=1, sticky="w", pady=(5, 0))
         ttk.Label(parent, text="Only process books marked Removed in the selector",
                   font=("", 8), foreground="gray").grid(row=9, column=1, columnspan=2, sticky="w")
+
+        ttk.Label(parent, text="StoryGraph username:", font=("", 9, "bold")).grid(
+            row=10, column=0, sticky="w", pady=(10, 0))
+        self.sg_vars["username"] = tk.StringVar(
+            value=self.config.get("storygraph", {}).get("username", "meghanareed"))
+        ttk.Entry(parent, textvariable=self.sg_vars["username"], width=28).grid(
+            row=10, column=1, sticky="w", pady=(10, 0))
+        ttk.Label(parent, text="Used by Sync Read from StoryGraph: app.thestorygraph.com/books-read/<username>",
+                  font=("", 8), foreground="gray").grid(row=11, column=1, columnspan=2, sticky="w")
 
         parent.columnconfigure(1, weight=1)
     

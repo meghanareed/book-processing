@@ -44,7 +44,7 @@
     "removals_only": false,
 
     "_username_comment": "Your StoryGraph username, used by Sync Read from StoryGraph to open your read shelf. Leave blank and it is discovered from the profile link after you log in.",
-    "username": "",
+    "username": "meghanareed",
     "read_sync_max_pages": 200
   },
 

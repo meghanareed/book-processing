@@ -42,6 +42,7 @@ from storygraph_to_read import (
     clean_text,
     ensure_storygraph_columns,
     fold,
+    is_book_result_link,
     launch_browser,
     log,
     safe_inner_text,
@@ -71,13 +72,60 @@ def discover_username(page) -> str:
     return ""
 
 
+def _books_from_panes(page, seen: set) -> list[tuple[str, str]]:
+    """Read (title, author) out of .book-pane containers."""
+    out = []
+    panes = page.locator(".book-pane")
+    for i in range(panes.count()):
+        try:
+            pane = panes.nth(i)
+            link = pane.locator('a[href*="/books/"]').first
+            href = clean_text(link.get_attribute("href"))
+            if not href or "/editions" in href or href in seen:
+                continue
+            title = safe_inner_text(link)
+            if not title:
+                continue
+            seen.add(href)
+            out.append((title, safe_inner_text(pane.locator('a[href*="/authors/"]').first)))
+        except Exception:
+            continue
+    return out
+
+
+def _books_from_links(page, seen: set) -> list[tuple[str, str]]:
+    """Fallback for when .book-pane is absent: scan the book links directly
+    and take the author from each link's surrounding block."""
+    out = []
+    links = page.locator('a[href*="/books/"]')
+    for i in range(links.count()):
+        try:
+            link = links.nth(i)
+            href = clean_text(link.get_attribute("href"))
+            title = safe_inner_text(link)
+            if not is_book_result_link(title, href) or href in seen:
+                continue
+            seen.add(href)
+            author = safe_inner_text(
+                link.locator("xpath=ancestor::*[self::li or self::article or self::div][1]")
+                    .locator('a[href*="/authors/"]').first
+            )
+            out.append((title, author))
+        except Exception:
+            continue
+    return out
+
+
 def scrape_read_shelf(page, username: str) -> list[tuple[str, str]]:
     """Return (title, author) for every book on the read shelf."""
     books: list[tuple[str, str]] = []
     seen_hrefs: set[str] = set()
 
     for page_num in range(1, MAX_PAGES + 1):
-        url = f"{BASE_URL}/books-read/{username}?page={page_num}"
+        # Page 1 is the bare shelf URL; only later pages need the parameter.
+        url = f"{BASE_URL}/books-read/{username}"
+        if page_num > 1:
+            url += f"?page={page_num}"
         log(f"  [READ] Page {page_num}: {url}")
         try:
             page.goto(url, wait_until="domcontentloaded", timeout=30000)
@@ -86,37 +134,15 @@ def scrape_read_shelf(page, username: str) -> list[tuple[str, str]]:
             log(f"  [READ] Could not load page {page_num}: {e}")
             break
 
-        panes = page.locator(".book-pane")
-        count = panes.count()
-        if count == 0:
-            # Fall back to raw book links in case the pane class changes.
-            count = page.locator('a[href*="/books/"]').count()
-            if count == 0:
-                log(f"  [READ] No books on page {page_num} — stopping.")
-                break
+        found = _books_from_panes(page, seen_hrefs)
+        if not found and page_num == 1:
+            log("  [READ] No .book-pane containers — trying raw book links")
+            found = _books_from_links(page, seen_hrefs)
 
-        found_here = 0
-        for i in range(count):
-            try:
-                pane = panes.nth(i)
-                title_link = pane.locator('a[href*="/books/"]').first
-                href = clean_text(title_link.get_attribute("href"))
-                # Skip the editions/owned helper links that share the prefix.
-                if not href or "/editions" in href or href in seen_hrefs:
-                    continue
-                title = safe_inner_text(title_link)
-                if not title:
-                    continue
-                author = safe_inner_text(pane.locator('a[href*="/authors/"]').first)
-                seen_hrefs.add(href)
-                books.append((title, author))
-                found_here += 1
-            except Exception:
-                continue
-
-        log(f"  [READ] Page {page_num}: {found_here} book(s)")
-        if found_here == 0:
+        log(f"  [READ] Page {page_num}: {len(found)} new book(s)")
+        if not found:
             break
+        books.extend(found)
 
     return books
 
