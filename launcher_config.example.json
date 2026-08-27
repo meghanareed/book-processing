@@ -38,7 +38,10 @@
     "retry_failed_after_days": 30,
 
     "_save_comment": "How many books to process between spreadsheet saves. Saving rewrites every sheet and copies a backup, which on OneDrive takes longer than processing a book. Progress is always flushed at the end of a run, on interrupt and on error, so at most this many books' results are ever at risk. Set to 1 for the old save-after-every-book behaviour.",
-    "save_every_n_books": 25
+    "save_every_n_books": 25,
+
+    "_removals_only_comment": "true processes only books marked Removed in the selector, skipping every pending add. Max Books samples at random across everything eligible, so with a handful of removals among a thousand adds it would rarely pick one — use this to run or test removals on their own.",
+    "removals_only": false
   },
 
   "reenrich": {

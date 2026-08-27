@@ -85,6 +85,12 @@ RETRY_FAILED_AFTER_DAYS       = _cfg_days("retry_failed_after_days", 30)
 # error, so at most this many books' results are at risk.
 SAVE_EVERY_N_BOOKS = max(1, _cfg_days("save_every_n_books", 25))
 
+# Process only books marked Removed, skipping every pending add.  Max Books
+# samples at random across everything eligible, so with a few removals among
+# a thousand-odd adds it would almost never pick one; this makes removals
+# runnable (and testable) on their own.
+REMOVALS_ONLY = bool(_SG_CFG.get("removals_only", False))
+
 # A real, reused browser profile rather than a blank one per run.  StoryGraph's
 # bot check hands out a clearance cookie; with a throwaway profile there is
 # nowhere to keep it, so every run starts the challenge from scratch.  Kept
@@ -1212,6 +1218,12 @@ def main():
         if removals.any():
             log(f"  [REMOVE] {int(removals.sum())} book(s) marked Removed to take "
                 f"off the To-Read pile")
+
+    if REMOVALS_ONLY:
+        before = len(df)
+        df = df[df.apply(needs_removal, axis=1)].copy()
+        log(f"  [REMOVALS ONLY] Processing {len(df)} removal(s), skipping "
+            f"{before - len(df)} pending add(s)")
 
     # Cooldowns: skip anything processed too recently, and hold failed
     # attempts until their retry interval is up.

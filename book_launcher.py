@@ -92,6 +92,7 @@ DEFAULT_CONFIG = {
         "max_books": 0,  # 0 = all books
         "skip_if_processed_within_days": 30,  # 0 = no cooldown
         "retry_failed_after_days": 30,        # 0 = retry failures immediately
+        "removals_only": False,               # skip pending adds, do removals only
     },
 }
 
@@ -727,6 +728,18 @@ class SettingsDialog(tk.Toplevel):
                   foreground="gray").grid(row=5, column=2, sticky="w", padx=5)
         ttk.Label(parent, text="Books added or already on your shelf are never redone",
                   font=("", 8), foreground="gray").grid(row=6, column=1, columnspan=2, sticky="w")
+
+        ttk.Separator(parent, orient="horizontal").grid(
+            row=7, column=0, columnspan=3, sticky="ew", pady=(12, 6))
+        ttk.Label(parent, text="Removals only:", font=("", 9, "bold")).grid(
+            row=8, column=0, sticky="w", pady=(5, 0))
+        self.sg_vars["removals_only"] = tk.BooleanVar(
+            value=self.config.get("storygraph", {}).get("removals_only", False))
+        ttk.Checkbutton(parent, text="Skip pending adds",
+                        variable=self.sg_vars["removals_only"]).grid(
+            row=8, column=1, sticky="w", pady=(5, 0))
+        ttk.Label(parent, text="Only process books marked Removed in the selector",
+                  font=("", 8), foreground="gray").grid(row=9, column=1, columnspan=2, sticky="w")
 
         parent.columnconfigure(1, weight=1)
     
