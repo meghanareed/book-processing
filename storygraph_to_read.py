@@ -264,12 +264,23 @@ def apply_cooldowns(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+DECISION_REMOVED = "Removed"
+
+
+def needs_removal(row: pd.Series) -> bool:
+    """True if the selector said Removed — take it off the To-Read pile."""
+    return clean_text(row.get(DECISION_COL)).lower() == DECISION_REMOVED.lower()
+
+
 def should_skip_storygraph(row: pd.Series) -> bool:
     if clean_text(row.get(SKIP_COL)).lower() == "yes":
         return True
-    # Any selector decision — Read, Ignored or Removed — means you have already
-    # dealt with this book and don't want it pushed to your to-read pile.
-    return clean_text(row.get(DECISION_COL)) != ""
+    decision = clean_text(row.get(DECISION_COL))
+    if not decision:
+        return False
+    # Read and Ignored just mean "don't offer this again", so there is nothing
+    # to do on StoryGraph.  Removed is a job: go and take it off the pile.
+    return not needs_removal(row)
 
 
 def is_owned(row: pd.Series) -> bool:
@@ -852,6 +863,61 @@ def click_to_read(page) -> bool:
     return False
 
 
+def remove_from_to_read(page) -> bool:
+    """Take the book off the To-Read pile.
+
+    StoryGraph exposes this as a delete link, much like un-marking owned, and
+    sometimes only behind the chevron next to the status pill.  Several shapes
+    are tried because the markup has changed before; the log names whichever
+    one worked so it can be narrowed later.
+    """
+    remove_selectors = [
+        'a[href*="/remove-from-to-read"]',
+        'a[href*="/remove-to-read"]',
+        'a[href*="remove"][href*="to-read"]',
+        'a.remove-from-to-read-link',
+        'a[data-method="delete"]:has-text("to read")',
+        'button[title="Remove from your To-Read Pile"]',
+        'button[aria-label="Remove from your To-Read Pile"]',
+    ]
+
+    def try_selectors(selectors, label) -> bool:
+        for selector in selectors:
+            try:
+                locator = page.locator(selector).first
+                if locator.count() > 0 and locator.is_visible(timeout=1500):
+                    log(f"    [REMOVE] Clicking {label} (found: {selector})")
+                    locator.click()
+                    page.wait_for_timeout(2000)
+                    return True
+            except Exception:
+                continue
+        return False
+
+    if try_selectors(remove_selectors, "remove link"):
+        return not book_already_to_read(page)
+
+    # Not on the page directly — open the status dropdown and look again.
+    dropdown_selectors = [
+        'button.read-status-label + button',            # chevron beside the pill
+        'button[aria-haspopup="true"]:near(.read-status-label)',
+        '.read-status-dropdown button',
+        'button[aria-expanded="false"]:has-text("to read")',
+    ]
+    if try_selectors(dropdown_selectors, "status dropdown"):
+        menu_selectors = remove_selectors + [
+            '*:has-text("remove from to-read")',
+            '*:has-text("remove from shelf")',
+            'a:has-text("remove")',
+            'button:has-text("remove")',
+        ]
+        if try_selectors(menu_selectors, "remove item"):
+            return not book_already_to_read(page)
+
+    log("    [REMOVE] ERROR: Could not find a control to remove it from To-Read")
+    return False
+
+
 def book_already_owned(page) -> bool:
     """
     Return True if the book is already marked as owned on StoryGraph.
@@ -959,6 +1025,25 @@ def process_book(page, row: pd.Series) -> dict:
 
         result[MATCHED_QUERY_COL] = query
         log(f"    [PROCESS] Processing book page: {page.url}")
+
+        # ── Removed in the selector: take it off the To-Read pile ─────────
+        if needs_removal(row):
+            if book_already_to_read(page):
+                if remove_from_to_read(page):
+                    result[STATUS_COL]    = "Removed"
+                    result[NOTES_COL]     = "Removed from To-Read pile"
+                    result[COMPLETED_COL] = "Yes"
+                    log("    [PROCESS] Removed from To-Read")
+                else:
+                    result[STATUS_COL]    = STATUS_FAILED
+                    result[NOTES_COL]     = "On To-Read but remove control not found"
+                    result[COMPLETED_COL] = "No"
+            else:
+                result[STATUS_COL]    = "Removed"
+                result[NOTES_COL]     = "Marked Removed; was not on To-Read pile"
+                result[COMPLETED_COL] = "Yes"
+                log("    [PROCESS] Not on To-Read — nothing to remove")
+            return result
 
         # ── Already Read on StoryGraph? ───────────────────────────────────
         # Check this BEFORE the To-Read logic. If SG shows the book as Read,
@@ -1096,7 +1181,14 @@ def main():
 
     # Only process books that came from Amazon (Owned = Yes)
     if OWNED_COL in df.columns:
-        df = df[df[OWNED_COL].apply(clean_text).str.lower() == "yes"].copy()
+        owned = df[OWNED_COL].apply(clean_text).str.lower() == "yes"
+        # A removal is about your To-Read pile, not about owning the book, so
+        # Removed rows come through whether or not Owned is set.
+        removals = df.apply(needs_removal, axis=1)
+        df = df[owned | removals].copy()
+        if removals.any():
+            log(f"  [REMOVE] {int(removals.sum())} book(s) marked Removed to take "
+                f"off the To-Read pile")
 
     # Cooldowns: skip anything processed too recently, and hold failed
     # attempts until their retry interval is up.
