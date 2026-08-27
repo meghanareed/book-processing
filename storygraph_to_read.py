@@ -1,5 +1,6 @@
 import re
 import time
+import unicodedata
 import difflib
 import datetime
 import json
@@ -456,6 +457,44 @@ def submit_search(page, query: str) -> bool:
     log(f"    [SEARCH] ERROR: Could not find search box")
 
 
+# Letters that carry no combining mark, so NFKD alone will not fold them.
+_FOLD_EXTRA = str.maketrans({
+    "ø": "o", "đ": "d", "ð": "d", "ł": "l", "ħ": "h", "ı": "i",
+    "ß": "ss", "æ": "ae", "œ": "oe", "þ": "th",
+})
+
+
+def fold(text) -> str:
+    """Lowercase and strip accents for comparison.
+
+    Comparisons were already lowercased; the miss was diacritics.  StoryGraph
+    shows 'Blanka Lipińska' while the spreadsheet holds 'Blanka Lipinska', and
+    'lipinska' is not a substring of 'lipińska' — so the author check rejected
+    a page whose every author link was the right person.
+    """
+    lowered = clean_text(text).lower().translate(_FOLD_EXTRA)
+    return "".join(
+        c for c in unicodedata.normalize("NFKD", lowered)
+        if not unicodedata.combining(c)
+    )
+
+
+# Reading text from a locator that matches nothing makes Playwright wait out
+# its 30s default.  The sibling probes below try two such selectors per
+# candidate, which is where the 60-second stalls in the log came from.
+ELEMENT_TEXT_TIMEOUT_MS = 2000
+
+
+def safe_inner_text(locator, timeout_ms: int = ELEMENT_TEXT_TIMEOUT_MS) -> str:
+    """inner_text() that gives up quickly instead of blocking the whole run."""
+    try:
+        if locator.count() == 0:
+            return ""
+        return clean_text(locator.inner_text(timeout=timeout_ms))
+    except Exception:
+        return ""
+
+
 BOOK_HREF_RE = re.compile(r"^/books/[0-9a-f-]{36}/?$", re.IGNORECASE)
 
 # Anchor text that is page furniture rather than a book title.  These were
@@ -512,7 +551,7 @@ def _title_score(candidate: str, target: str) -> float:
     'God of Ruin' matches 'God of Ruin: A Dark College Romance...'.
     """
     def core(t: str) -> str:
-        t = clean_text(t).lower()
+        t = fold(t)   # accent-insensitive, same as the author check
         for sep in [": ", " - ", " ("]:
             if sep in t:
                 t = t[:t.index(sep)]
@@ -538,7 +577,7 @@ def pick_first_matching_result(page, title: str, author: str,
         authors = [a.strip() for a in author.replace(" and ", ", ").split(",")]
         for auth in authors:
             if auth:
-                last_name = auth.split()[-1].lower()
+                last_name = fold(auth.split()[-1])
                 author_last_names.append(last_name)
     
     log(f"    [PICK] Looking for: title={title!r}, author={author!r}")
@@ -573,7 +612,7 @@ def pick_first_matching_result(page, title: str, author: str,
             for i in range(min(count, 20)):
                 link = links.nth(i)
                 try:
-                    text = clean_text(link.inner_text())
+                    text = safe_inner_text(link)
                     href = clean_text(link.get_attribute("href"))
                 except Exception as e:
                     log(f"    [PICK] [{i}] Error getting text/href: {e}")
@@ -596,11 +635,11 @@ def pick_first_matching_result(page, title: str, author: str,
                     author_found = False
                     try:
                         # Strategy 1: Check parent container text
-                        parent_text = clean_text(link.locator("..").inner_text())
+                        parent_text = safe_inner_text(link.locator(".."))
                         log(f"    [PICK] [{i}] Parent text: {parent_text[:100]!r}")
                         # Check if ANY author last name appears
                         for author_last in author_last_names:
-                            if author_last in parent_text.lower():
+                            if author_last in fold(parent_text):
                                 author_found = True
                                 log(f"    [PICK] [{i}] ✓ Author '{author_last}' found in parent")
                                 break
@@ -621,11 +660,11 @@ def pick_first_matching_result(page, title: str, author: str,
                             for j in range(min(author_count, 50)):
                                 try:
                                     author_link = author_links.nth(j)
-                                    author_text = clean_text(author_link.inner_text())
+                                    author_text = safe_inner_text(author_link)
                                     authors_checked.append(author_text)
                                     # Check if ANY author last name matches
                                     for author_last in author_last_names:
-                                        if author_last in author_text.lower():
+                                        if author_last in fold(author_text):
                                             author_found = True
                                             log(f"    [PICK] [{i}] ✓ Author '{author_last}' found in link: '{author_text}'")
                                             break
@@ -646,14 +685,14 @@ def pick_first_matching_result(page, title: str, author: str,
                             for sib_selector in ["+ *", "~ *"]:
                                 try:
                                     sibling = link.locator(sib_selector).first
-                                    siblings_text += " " + clean_text(sibling.inner_text())
+                                    siblings_text += " " + safe_inner_text(sibling)
                                 except Exception:
                                     pass
                             if siblings_text:
                                 log(f"    [PICK] [{i}] Sibling text: {siblings_text[:100]!r}")
                             # Check if ANY author last name appears
                             for author_last in author_last_names:
-                                if author_last in siblings_text.lower():
+                                if author_last in fold(siblings_text):
                                     author_found = True
                                     log(f"    [PICK] [{i}] ✓ Author '{author_last}' found in siblings")
                                     break
