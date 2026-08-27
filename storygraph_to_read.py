@@ -6,6 +6,16 @@ from pathlib import Path
 
 import pandas as pd
 from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError, Error as PlaywrightError
+import sys
+
+# Windows consoles and pipes default to cp1252, which cannot encode the ✓ ✗ →
+# characters logged below; printing one raises UnicodeEncodeError mid-run.
+# Force UTF-8 so this holds however the script is started.
+try:
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+except Exception:
+    pass
 
 
 def _is_browser_closed(e: Exception) -> bool:
@@ -155,7 +165,7 @@ FAILURE_NOTE_MARKERS = (
 def is_failed_attempt(row: pd.Series) -> bool:
     """True if the last attempt failed, rather than succeeding or finding the
     book already on the shelf.  Failures are retried once their cooldown is up."""
-    if clean_text(row.get(STATUS_COL)) in {STATUS_FAILED, "Not Found"}:
+    if clean_text(row.get(STATUS_COL)) in {STATUS_FAILED, "Not Found", "Error"}:
         return True
     notes = clean_text(row.get(NOTES_COL)).lower()
     return any(marker in notes for marker in FAILURE_NOTE_MARKERS)
@@ -193,10 +203,14 @@ def apply_cooldowns(df: pd.DataFrame) -> pd.DataFrame:
     if ADDED_DATE_COL not in df.columns or df.empty:
         return df
 
-    ages = df[ADDED_DATE_COL].apply(days_since)
+    ages   = df[ADDED_DATE_COL].apply(days_since)
+    failed = df.apply(is_failed_attempt, axis=1)
 
     if SKIP_IF_PROCESSED_WITHIN_DAYS:
-        recent = ages.apply(
+        # The blanket guard is about not redoing work that succeeded.  A failed
+        # attempt is not work done, so it answers to the retry cooldown below
+        # instead — otherwise a crashed run would be locked out for a month.
+        recent = ~failed & ages.apply(
             lambda a: a is not None and a < SKIP_IF_PROCESSED_WITHIN_DAYS
         )
         if recent.any():

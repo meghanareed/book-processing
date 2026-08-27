@@ -5,6 +5,16 @@ Run this to see how many books qualify for StoryGraph processing
 import pandas as pd
 from pathlib import Path
 import json
+import sys
+
+# Windows consoles and pipes default to cp1252, which cannot encode the ✓ ✗ →
+# characters logged below; printing one raises UnicodeEncodeError mid-run.
+# Force UTF-8 so this holds however the script is started.
+try:
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+except Exception:
+    pass
 
 # SCRIPT_DIR holds the code (and launcher_config.json); DATA_DIR holds the
 # spreadsheets and logs.  They are the same folder in the old layout and

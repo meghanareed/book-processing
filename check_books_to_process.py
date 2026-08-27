@@ -1,5 +1,15 @@
 import pandas as pd
 from pathlib import Path
+import sys
+
+# Windows consoles and pipes default to cp1252, which cannot encode the ✓ ✗ →
+# characters logged below; printing one raises UnicodeEncodeError mid-run.
+# Force UTF-8 so this holds however the script is started.
+try:
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+except Exception:
+    pass
 
 EXCEL_PATH = Path(r"C:\Users\megha\OneDrive\Documents\Reading\books_output.xlsx")
 

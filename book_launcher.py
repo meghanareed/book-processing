@@ -200,6 +200,8 @@ def build_runner_command(tool: dict, config: dict) -> str:
     
     # Force unbuffered output so console shows progress in real-time
     pieces.append('set PYTHONUNBUFFERED=1')
+    pieces.append('set PYTHONIOENCODING=utf-8')
+    pieces.append('chcp 65001 >nul')
     
     pieces.extend([
         f'cd /d "{SCRIPT_DIR}"',
@@ -315,6 +317,9 @@ def apply_decisions(status_var: tk.StringVar, log_widget: tk.Text, config: dict)
 
     env = os.environ.copy()
     env["PYTHONUNBUFFERED"] = "1"
+    # Encode child stdout as UTF-8; the Windows default (cp1252) cannot
+    # represent the ✓ ✗ → ─ characters the scripts log.
+    env["PYTHONIOENCODING"] = "utf-8"
 
     def worker() -> None:
         status_var.set("Applying decisions…")
@@ -351,6 +356,11 @@ def _stream_into_log(cmd: list[str], log_widget: tk.Text, env: dict,
         stderr=subprocess.STDOUT,
         stdin=subprocess.DEVNULL,
         text=True,
+        # Decode as UTF-8 rather than the Windows locale codepage: the scripts
+        # log ✓ ✗ → ─, none of which exist in cp1252.  errors="replace" keeps a
+        # stray byte from killing the whole run.
+        encoding="utf-8",
+        errors="replace",
         bufsize=1,
         env=env,
     )
@@ -398,6 +408,9 @@ def launch_in_panel(tool: dict, config: dict, status_var: tk.StringVar,
     py  = find_python()
     env = os.environ.copy()
     env["PYTHONUNBUFFERED"] = "1"
+    # Encode child stdout as UTF-8; the Windows default (cp1252) cannot
+    # represent the ✓ ✗ → ─ characters the scripts log.
+    env["PYTHONIOENCODING"] = "utf-8"
 
     api_key = config.get("books_py", {}).get("openai_api_key", "")
     if api_key:
@@ -474,6 +487,9 @@ def run_piped(label: str, script: str, args: list[str],
     py  = find_python()
     env = os.environ.copy()
     env["PYTHONUNBUFFERED"] = "1"
+    # Encode child stdout as UTF-8; the Windows default (cp1252) cannot
+    # represent the ✓ ✗ → ─ characters the scripts log.
+    env["PYTHONIOENCODING"] = "utf-8"
 
     # Inject API key if stored in config
     api_key = config.get("books_py", {}).get("openai_api_key", "")

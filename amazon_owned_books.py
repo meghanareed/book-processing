@@ -36,6 +36,15 @@ import datetime
 import traceback
 import sys as _sys
 
+# Windows consoles and pipes default to cp1252, which cannot encode the ✓ ✗ →
+# characters logged below; printing one raises UnicodeEncodeError mid-run.
+# Force UTF-8 so this holds however the script is started.
+try:
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+except Exception:
+    pass
+
 _log_file = None   # opened immediately after LOG_PATH is defined (see below)
 _log_buffer: list[str] = []  # captures messages emitted before the file is open
 
