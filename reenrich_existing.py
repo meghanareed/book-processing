@@ -367,10 +367,12 @@ def apply_result(row: pd.Series, result: dict) -> tuple[pd.Series, list[str]]:
         row[field] = new_str
         changed.append(field)
 
-    # Always (re-)derive LengthCategory if PageCount was just filled
-    if "PageCount" in changed and not clean_text(row.get("LengthCategory", "")):
+    # Always (re-)derive LengthCategory if PageCount was just filled — including
+    # over an existing value, which is how a row that a missing page count once
+    # stamped "Short" gets the category its real page count deserves.
+    if "PageCount" in changed:
         lc = page_count_to_length_category(row["PageCount"])
-        if lc:
+        if lc and lc != clean_text(row.get("LengthCategory", "")):
             row["LengthCategory"] = lc
             if "LengthCategory" not in changed:
                 changed.append("LengthCategory")

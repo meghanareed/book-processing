@@ -215,11 +215,24 @@ def preprocess_image_to_base64(image_path: Path, max_size=(1200, 1200), jpeg_qua
         return base64.b64encode(buffer.getvalue()).decode("utf-8")
 
 
-def page_count_to_length_category(page_count) -> str:
+def normalize_page_count(page_count):
+    """Blank out page counts that mean 'we don't know'.
+
+    Google Books returns pageCount 0 for most ebook editions, and storing that
+    zero made a book look 0 pages long rather than unmeasured — which then read
+    as "Short" downstream and left it out of every page-range filter.
+    """
     try:
         p = int(float(page_count))
-    except Exception:
+    except (TypeError, ValueError):
         return ""
+    return p if p > 0 else ""
+
+
+def page_count_to_length_category(page_count) -> str:
+    p = normalize_page_count(page_count)
+    if p == "":
+        return ""  # no page count, no category — never guess "Short"
     if p < 200:
         return "Short"
     if p < 400:
@@ -701,7 +714,7 @@ def lookup_google_books(title: str, author: str) -> dict:
                 isbn_10, isbn_13 = extract_isbns_from_identifiers(info.get("industryIdentifiers", []))
                 categories = info.get("categories", []) or []
                 description = clean_text(info.get("description"))
-                page_count = info.get("pageCount", "")
+                page_count = normalize_page_count(info.get("pageCount", ""))
                 maturity = clean_text(info.get("maturityRating"))
                 return {
                     "ISBN_10": isbn_10,
@@ -721,7 +734,7 @@ def lookup_google_books(title: str, author: str) -> dict:
             if isbn_10 or isbn_13:
                 categories = info.get("categories", []) or []
                 description = clean_text(info.get("description"))
-                page_count = info.get("pageCount", "")
+                page_count = normalize_page_count(info.get("pageCount", ""))
                 maturity = clean_text(info.get("maturityRating"))
                 return {
                     "ISBN_10": isbn_10,
@@ -768,7 +781,7 @@ def lookup_open_library(title: str, author: str) -> dict:
                     elif len(clean) == 13 and not isbn_13:
                         isbn_13 = clean
                 subjects = doc.get("subject", []) or []
-                page_count = doc.get("number_of_pages_median", "")
+                page_count = normalize_page_count(doc.get("number_of_pages_median", ""))
                 return {
                     "ISBN_10": isbn_10,
                     "ISBN_13": isbn_13,
@@ -975,11 +988,12 @@ def ensure_all_books_columns(df: pd.DataFrame) -> pd.DataFrame:
         df[col] = df[col].apply(normalize_csv_list)
 
     df["Confidence"] = pd.to_numeric(df["Confidence"], errors="coerce").fillna(0.0)
-    df["PageCount"] = pd.to_numeric(df["PageCount"], errors="coerce").fillna("")
-    df["LengthCategory"] = df.apply(
-        lambda row: clean_text(row["LengthCategory"]) or page_count_to_length_category(row["PageCount"]),
-        axis=1
-    )
+    df["PageCount"] = df["PageCount"].apply(normalize_page_count)
+    # PageCount is the only thing LengthCategory has ever been derived from, so
+    # recompute it here instead of trusting whatever is in the sheet. That heals
+    # the rows stamped "Short" back when a missing page count came through as a
+    # zero, and re-grades a book the moment a real page count turns up for it.
+    df["LengthCategory"] = df["PageCount"].apply(page_count_to_length_category)
 
     return df[ALL_BOOKS_COLUMNS]
 
