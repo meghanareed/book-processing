@@ -48,11 +48,15 @@ Double-click `Launcher.bat` (or your desktop shortcut). You'll see buttons for:
 1. **Process Screenshots** - Runs books.py to extract titles from screenshots
 2. **Update Amazon Owned** - Marks owned books from Amazon
 3. **Push to StoryGraph** - Adds books to your StoryGraph to-read list
-4. **Open Book Selector** - Opens https://meghanareed.github.io/my-book-selector/
-5. **Apply Selector Decisions** - Imports decisions JSON to update both spreadsheets
-6. **Fill Missing Metadata** - Runs reenrich_existing.py to backfill PageCount, Genre, Tropes
-7. **Open Reading Folder** - Opens the data folder in Explorer
-8. **View Latest Log** - Opens the newest log file from the data folder's `logs\`
+4. **Sync Read from StoryGraph** - Marks books read on StoryGraph as Read
+5. **Open Book Selector** - Opens https://meghanareed.github.io/my-book-selector/
+6. **Apply Selector Decisions** - Imports decisions JSON to update both spreadsheets
+7. **Fill Missing Metadata** - Runs reenrich_existing.py to backfill PageCount, Genre, Tropes
+8. **Backfill Page Counts** - Same script, page counts only (`--missing PageCount --force`).
+   The length filters in the selector need these; books whose page count is unknown are
+   left out of every page-range filter. One OpenAI call per book, so it is a long run.
+9. **Open Reading Folder** - Opens the data folder in Explorer
+10. **View Latest Log** - Opens the newest log file from the data folder's `logs\`
 
 Output streams into the launcher's Output Log panel as each script runs. The panel clears
 at the start of every run; the full history is in `logs\` in the data folder.

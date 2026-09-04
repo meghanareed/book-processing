@@ -29,8 +29,12 @@ Examples:
     # Re-enrich everything (respects skip rules from config)
     python reenrich_existing.py
 
-    # Just fill in page counts — cheap, no OpenAI cost
-    python reenrich_existing.py --missing PageCount
+    # Just fill in page counts. Note --force: the default skip rules (enriched
+    # in the last 180 days, or already 70% complete) leave out almost every row
+    # whose only gap is a page count. Every row still costs one OpenAI call —
+    # lookup_book_metadata always runs the AI enrichment step — so try
+    # --limit 25 first to gauge the hit rate.
+    python reenrich_existing.py --missing PageCount --force
 
     # Test on 10 books first
     python reenrich_existing.py --limit 10 --dry-run

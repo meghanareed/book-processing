@@ -18,7 +18,7 @@ Two questions answered here:
 | `amazon_owned_books.py` | "Update Amazon Owned" — Playwright scrapes your Amazon library. |
 | `storygraph_to_read.py` | "Push to StoryGraph" — Playwright adds books to your to-read pile. |
 | `apply_reading_log.py` | "Apply Selector Decisions" — imports the decisions JSON. |
-| `reenrich_existing.py` | "Fill Missing Metadata" — backfills PageCount / Genre / Tropes. |
+| `reenrich_existing.py` | "Fill Missing Metadata" — backfills PageCount / Genre / Tropes. Also "Backfill Page Counts", the same script with `--missing PageCount --force`. |
 | `Launcher.bat` | Double-click entry point; finds Python, starts the GUI. |
 | `check_books_to_process.py` + `check_books.bat` | Diagnostic: how many books are queued. |
 | `storygraph_diagnostic.py` | Diagnostic: StoryGraph selector troubleshooting. |

@@ -160,9 +160,12 @@ Before opening the browser, **Push to StoryGraph** filters out books matching an
 1. **Process Screenshots** → Extracts books from screenshots (books.py)
 2. **Update Amazon Owned** → Marks owned books (amazon_owned_books.py)
 3. **Push to StoryGraph** → Adds to StoryGraph (storygraph_to_read.py)
-4. **Open Book Selector** → Opens https://meghanareed.github.io/my-book-selector/
-5. **Apply Selector Decisions** → Imports JSON, updates spreadsheets
-6. **Open Reading Folder** → Opens folder in Explorer
+4. **Sync Read from StoryGraph** → Marks SG-read books as Read (storygraph_read_sync.py)
+5. **Open Book Selector** → Opens https://meghanareed.github.io/my-book-selector/
+6. **Apply Selector Decisions** → Imports JSON, updates spreadsheets
+7. **Fill Missing Metadata** → Backfills any missing field (reenrich_existing.py)
+8. **Backfill Page Counts** → Page counts only, ignoring the skip rules
+9. **Open Reading Folder** → Opens folder in Explorer
 
 ### Decisions JSON Format:
 ```json
