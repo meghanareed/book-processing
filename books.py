@@ -932,7 +932,24 @@ Description:
         }
 
 
-def lookup_book_metadata(title: str, author: str) -> dict:
+# The only fields ai_content_enrichment can return. A row missing nothing from
+# this list has nothing to gain from the model call.
+AI_FILLABLE_FIELDS = ("Genre", "AgeRange", "Tropes", "Triggers")
+
+
+def lookup_book_metadata(title: str, author: str, need_fields=None,
+                         known_asin: str = "") -> dict:
+    """Look a book up across Google Books, Open Library, Amazon and the AI.
+
+    need_fields is the set of fields the caller still needs; passing it lets the
+    lookups that cannot contribute be skipped, which is most of the cost of a
+    row that only wants a page count. None means "anything you can get" — how
+    books.py calls this for a book it has never seen.
+
+    known_asin is the ASIN the caller already holds. Searching Amazon for an
+    ASIN that is already in the spreadsheet is a request and a sleep spent
+    re-deriving a value we were handed.
+    """
     result = {
         "ISBN_10": "", "ISBN_13": "", "ASIN": "", "Lookup Source": "",
         "Description": "", "Genre": "", "PageCount": "", "LengthCategory": "", "AgeRange": "",
@@ -948,7 +965,9 @@ def lookup_book_metadata(title: str, author: str) -> dict:
         openlib_result = lookup_open_library(title, author)
         result.update({k: v for k, v in openlib_result.items() if clean_text(v)})
 
-    if ENABLE_ASIN_LOOKUP:
+    if clean_text(known_asin):
+        result["ASIN"] = clean_text(known_asin)
+    elif ENABLE_ASIN_LOOKUP and (need_fields is None or "ASIN" in need_fields):
         time.sleep(AMAZON_LOOKUP_SLEEP_SECONDS)
         asin_result = lookup_amazon_asin(title, author)
         if clean_text(asin_result.get("ASIN")):
@@ -956,23 +975,24 @@ def lookup_book_metadata(title: str, author: str) -> dict:
             if not clean_text(result["Lookup Source"]):
                 result["Lookup Source"] = asin_result.get("Lookup Source", "")
 
-    ai_result = ai_content_enrichment(
-        title=title,
-        author=author,
-        description=clean_text(result.get("Description")),
-        genre=clean_text(result.get("Genre")),
-        age_range=clean_text(result.get("AgeRange")),
-        page_count=result.get("PageCount", "")
-    )
+    if need_fields is None or any(f in need_fields for f in AI_FILLABLE_FIELDS):
+        ai_result = ai_content_enrichment(
+            title=title,
+            author=author,
+            description=clean_text(result.get("Description")),
+            genre=clean_text(result.get("Genre")),
+            age_range=clean_text(result.get("AgeRange")),
+            page_count=result.get("PageCount", "")
+        )
 
-    if clean_text(ai_result.get("Genre")):
-        result["Genre"] = ai_result["Genre"]
-    if clean_text(ai_result.get("AgeRange")) and not clean_text(result.get("AgeRange")):
-        result["AgeRange"] = ai_result["AgeRange"]
-    if clean_text(ai_result.get("Tropes")):
-        result["Tropes"] = ai_result["Tropes"]
-    if clean_text(ai_result.get("Triggers")):
-        result["Triggers"] = ai_result["Triggers"]
+        if clean_text(ai_result.get("Genre")):
+            result["Genre"] = ai_result["Genre"]
+        if clean_text(ai_result.get("AgeRange")) and not clean_text(result.get("AgeRange")):
+            result["AgeRange"] = ai_result["AgeRange"]
+        if clean_text(ai_result.get("Tropes")):
+            result["Tropes"] = ai_result["Tropes"]
+        if clean_text(ai_result.get("Triggers")):
+            result["Triggers"] = ai_result["Triggers"]
 
     if not clean_text(result.get("LengthCategory")) and clean_text(result.get("PageCount")):
         result["LengthCategory"] = page_count_to_length_category(result["PageCount"])

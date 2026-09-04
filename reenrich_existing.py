@@ -53,9 +53,10 @@ Examples:
 
     # Just fill in page counts. Note --force: the default skip rules (enriched
     # in the last 180 days, or already 70% complete) leave out almost every row
-    # whose only gap is a page count. Every row still costs one OpenAI call —
-    # lookup_book_metadata always runs the AI enrichment step — so try
-    # --limit 25 first to gauge the hit rate.
+    # whose only gap is a page count. A row missing nothing the model can
+    # supply skips the OpenAI call, and one that already has an ASIN skips the
+    # Amazon search, so this is the cheap direction — but still try --limit 25
+    # first to gauge the hit rate.
     python reenrich_existing.py --missing PageCount --force
 
     # Fix categories that disagree with their page count — free, no lookups
@@ -207,8 +208,9 @@ def _load_books_module():
             print("The Fill Missing Metadata step needs the API key", flush=True)
             print("to fill in Genre, Tropes, and Triggers via AI.", flush=True)
             print("", flush=True)
-            print("Every lookup goes through the AI enrichment step, so", flush=True)
-            print("the key is required even for --missing PageCount.", flush=True)
+            print("The key is required even for a --missing PageCount run", flush=True)
+            print("or --recategorize: books.py needs it just to import,", flush=True)
+            print("whether or not the run ends up calling the model.", flush=True)
             print("=" * 60, flush=True)
             sys.exit(1)
         raise
@@ -671,7 +673,15 @@ def _run(args, missing_field: str | None) -> None:
             continue
 
         try:
-            result  = lookup_book_metadata(title, author)
+            # Hand the lookup what this row is actually missing, and the ASIN it
+            # already holds. Both let it skip work that cannot change the row:
+            # the model call only ever returns Genre/AgeRange/Tropes/Triggers,
+            # and an Amazon search for a known ASIN re-derives what we passed in.
+            result  = lookup_book_metadata(
+                title, author,
+                need_fields=set(missing_now),
+                known_asin=clean_text(row.get("ASIN", "")),
+            )
 
             # If Google Books/OpenLibrary found nothing for PageCount but we have
             # an ASIN, try Amazon directly — Kindle books always have "Print length"
