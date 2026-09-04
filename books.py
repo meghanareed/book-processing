@@ -229,17 +229,28 @@ def normalize_page_count(page_count):
     return p if p > 0 else ""
 
 
+# The buckets the book selector's Length buttons advertise: X-Short <100,
+# Short <200, Medium 200-400, Long 400-600, Epic 600+. Keep these in step with
+# the labels in my-book-selector.html — the selector grades by page count when
+# it has one, so a mismatch here only shows up as a tag that contradicts the
+# button that found the book, which is worse than no tag at all.
+LENGTH_CATEGORY_BOUNDS = [
+    (100, "X-Short"),
+    (200, "Short"),
+    (400, "Medium"),
+    (600, "Long"),
+]
+LENGTH_CATEGORY_TOP = "Epic"
+
+
 def page_count_to_length_category(page_count) -> str:
     p = normalize_page_count(page_count)
     if p == "":
         return ""  # no page count, no category — never guess "Short"
-    if p < 200:
-        return "Short"
-    if p < 400:
-        return "Medium"
-    if p < 700:
-        return "Long"
-    return "Epic"
+    for limit, name in LENGTH_CATEGORY_BOUNDS:
+        if p < limit:
+            return name
+    return LENGTH_CATEGORY_TOP
 
 
 def metadata_enriched_yes(value) -> bool:
