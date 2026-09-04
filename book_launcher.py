@@ -85,6 +85,10 @@ DEFAULT_CONFIG = {
         "test_limit": 10,
         "enable_metadata_enrichment": True,
         "enable_asin_lookup": True,
+        # OpenAI retry/backoff, read by books.py
+        "retry_max_attempts": 6,
+        "retry_base_seconds": 5.0,
+        "retry_max_sleep": 60.0,
         # Folders books.py reads and writes.  Kept here so Reset to Defaults
         # restores them alongside everything else.
         "incoming_folder": str(DATA_ROOTS["incoming"]),
@@ -100,8 +104,19 @@ DEFAULT_CONFIG = {
         "skip_if_processed_within_days": 30,  # 0 = no cooldown
         "retry_failed_after_days": 30,        # 0 = retry failures immediately
         "removals_only": False,               # skip pending adds, do removals only
+        "save_every_n_books": 25,             # books between spreadsheet saves
         "username": "meghanareed",            # for the read-shelf sync URL
         "read_sync_max_scrolls": 500,         # runaway guard on the read shelf
+        "browser_channel": "chrome",          # Playwright channel for the shelf
+        "read_sync_scroll_wait_ms": 4000,     # pause between shelf scrolls
+        "read_sync_quiet_rounds": 3,          # stop after N scrolls add nothing
+    },
+    "reenrich": {
+        "min_age_days": 180,      # 0 = ignore how recently a row was enriched
+        "skip_threshold": 0.70,   # skip rows already this complete
+        "skip_decided": True,     # leave Read/Ignored/Removed books alone
+        "skip_read": True,        # leave rows whose Read column is Yes alone
+        "recategorize": True,     # re-grade LengthCategory from PageCount
     },
 }
 
@@ -599,6 +614,11 @@ class SettingsDialog(tk.Toplevel):
         sg_frame = ttk.Frame(notebook, padding=10)
         notebook.add(sg_frame, text="📚 StoryGraph")
         self.build_storygraph_settings(sg_frame)
+
+        # Re-enrich tab
+        re_frame = ttk.Frame(notebook, padding=10)
+        notebook.add(re_frame, text="🔁 Re-enrich")
+        self.build_reenrich_settings(re_frame)
         
     def build_books_settings(self, parent):
         self.books_vars = {}
@@ -646,11 +666,38 @@ class SettingsDialog(tk.Toplevel):
         self.books_vars["enable_asin_lookup"] = tk.BooleanVar(value=self.config.get("books_py", {}).get("enable_asin_lookup", True))
         ttk.Checkbutton(parent, text="Enable ASIN Lookup", variable=self.books_vars["enable_asin_lookup"]).grid(row=7, column=1, sticky="w", pady=2)
 
-        # --- Folders ---------------------------------------------------------
+        # --- OpenAI retries --------------------------------------------------
         ttk.Separator(parent, orient="horizontal").grid(
             row=8, column=0, columnspan=3, sticky="ew", pady=(12, 6))
-        ttk.Label(parent, text="Folders", font=("", 9, "bold")).grid(
+        ttk.Label(parent, text="OpenAI retries", font=("", 9, "bold")).grid(
             row=9, column=0, sticky="w")
+
+        retry_fields = [
+            ("retry_max_attempts", "Max attempts:", 1, 20, 1,
+             "Tries per image before it is deferred to the next run"),
+            ("retry_base_seconds", "Backoff base:", 0.5, 60.0, 0.5,
+             "Seconds; doubles each attempt"),
+            ("retry_max_sleep", "Backoff cap:", 1.0, 600.0, 5.0,
+             "Seconds; the longest one wait can get"),
+        ]
+        for offset, (key, label, lo, hi, step, hint) in enumerate(retry_fields):
+            row = 10 + (offset * 2)
+            ttk.Label(parent, text=label).grid(row=row, column=0, sticky="w", pady=(5, 0))
+            default = DEFAULT_CONFIG["books_py"][key]
+            var = (tk.IntVar if isinstance(default, int) else tk.DoubleVar)(
+                value=self.config.get("books_py", {}).get(key, default))
+            self.books_vars[key] = var
+            ttk.Spinbox(parent, from_=lo, to=hi, increment=step,
+                        textvariable=var, width=10).grid(
+                row=row, column=1, sticky="w", pady=(5, 0))
+            ttk.Label(parent, text=hint, font=("", 8), foreground="gray").grid(
+                row=row + 1, column=1, columnspan=2, sticky="w")
+
+        # --- Folders ---------------------------------------------------------
+        ttk.Separator(parent, orient="horizontal").grid(
+            row=16, column=0, columnspan=3, sticky="ew", pady=(12, 6))
+        ttk.Label(parent, text="Folders", font=("", 9, "bold")).grid(
+            row=17, column=0, sticky="w")
 
         folder_fields = [
             ("incoming_folder", "Incoming (screenshots):",
@@ -665,7 +712,7 @@ class SettingsDialog(tk.Toplevel):
         ]
 
         for offset, (key, label, default, hint) in enumerate(folder_fields):
-            row = 10 + (offset * 2)
+            row = 18 + (offset * 2)
             ttk.Label(parent, text=label).grid(row=row, column=0, sticky="w", pady=(5, 0))
 
             var = tk.StringVar(value=self.config.get("books_py", {}).get(key, default))
@@ -738,17 +785,28 @@ class SettingsDialog(tk.Toplevel):
         ttk.Label(parent, text="Books added or already on your shelf are never redone",
                   font=("", 8), foreground="gray").grid(row=6, column=1, columnspan=2, sticky="w")
 
+        ttk.Label(parent, text="Save every N books:").grid(
+            row=7, column=0, sticky="w", pady=(5, 0))
+        self.sg_vars["save_every_n_books"] = tk.IntVar(
+            value=self.config.get("storygraph", {}).get(
+                "save_every_n_books", DEFAULT_CONFIG["storygraph"]["save_every_n_books"]))
+        ttk.Spinbox(parent, from_=1, to=500,
+                    textvariable=self.sg_vars["save_every_n_books"],
+                    width=10).grid(row=7, column=1, sticky="w", pady=(5, 0))
+        ttk.Label(parent, text="Saving rewrites every sheet, so it is slower than processing a book",
+                  font=("", 8), foreground="gray").grid(row=7, column=2, sticky="w", padx=5)
+
         ttk.Separator(parent, orient="horizontal").grid(
-            row=7, column=0, columnspan=3, sticky="ew", pady=(12, 6))
+            row=18, column=0, columnspan=3, sticky="ew", pady=(12, 6))
         ttk.Label(parent, text="Removals only:", font=("", 9, "bold")).grid(
-            row=8, column=0, sticky="w", pady=(5, 0))
+            row=19, column=0, sticky="w", pady=(5, 0))
         self.sg_vars["removals_only"] = tk.BooleanVar(
             value=self.config.get("storygraph", {}).get("removals_only", False))
         ttk.Checkbutton(parent, text="Skip pending adds",
                         variable=self.sg_vars["removals_only"]).grid(
-            row=8, column=1, sticky="w", pady=(5, 0))
+            row=19, column=1, sticky="w", pady=(5, 0))
         ttk.Label(parent, text="Only process books marked Removed in the selector",
-                  font=("", 8), foreground="gray").grid(row=9, column=1, columnspan=2, sticky="w")
+                  font=("", 8), foreground="gray").grid(row=20, column=1, columnspan=2, sticky="w")
 
         ttk.Label(parent, text="StoryGraph username:", font=("", 9, "bold")).grid(
             row=10, column=0, sticky="w", pady=(10, 0))
@@ -769,8 +827,110 @@ class SettingsDialog(tk.Toplevel):
         ttk.Label(parent, text="The read shelf loads as you scroll; stop after this many",
                   font=("", 8), foreground="gray").grid(row=13, column=1, columnspan=2, sticky="w")
 
+        ttk.Label(parent, text="Scroll wait (read sync):").grid(
+            row=14, column=0, sticky="w", pady=(8, 0))
+        self.sg_vars["read_sync_scroll_wait_ms"] = tk.IntVar(
+            value=self.config.get("storygraph", {}).get(
+                "read_sync_scroll_wait_ms", DEFAULT_CONFIG["storygraph"]["read_sync_scroll_wait_ms"]))
+        ttk.Spinbox(parent, from_=250, to=30000, increment=250,
+                    textvariable=self.sg_vars["read_sync_scroll_wait_ms"],
+                    width=10).grid(row=14, column=1, sticky="w", pady=(8, 0))
+        ttk.Label(parent, text="ms  — how long to let each batch load before scrolling again",
+                  font=("", 8), foreground="gray").grid(row=14, column=2, sticky="w", padx=5)
+
+        ttk.Label(parent, text="Quiet rounds (read sync):").grid(
+            row=15, column=0, sticky="w", pady=(8, 0))
+        self.sg_vars["read_sync_quiet_rounds"] = tk.IntVar(
+            value=self.config.get("storygraph", {}).get(
+                "read_sync_quiet_rounds", DEFAULT_CONFIG["storygraph"]["read_sync_quiet_rounds"]))
+        ttk.Spinbox(parent, from_=1, to=20,
+                    textvariable=self.sg_vars["read_sync_quiet_rounds"],
+                    width=10).grid(row=15, column=1, sticky="w", pady=(8, 0))
+        ttk.Label(parent, text="Stop once this many scrolls in a row add no books",
+                  font=("", 8), foreground="gray").grid(row=15, column=2, sticky="w", padx=5)
+
+        ttk.Label(parent, text="Browser channel:", font=("", 9, "bold")).grid(
+            row=16, column=0, sticky="w", pady=(10, 0))
+        self.sg_vars["browser_channel"] = tk.StringVar(
+            value=self.config.get("storygraph", {}).get(
+                "browser_channel", DEFAULT_CONFIG["storygraph"]["browser_channel"]))
+        ttk.Combobox(parent, textvariable=self.sg_vars["browser_channel"],
+                     values=["chrome", "msedge", "chromium"], width=14).grid(
+            row=16, column=1, sticky="w", pady=(10, 0))
+        ttk.Label(parent, text="Which installed browser Playwright drives; chromium uses its own bundled build",
+                  font=("", 8), foreground="gray").grid(row=17, column=1, columnspan=2, sticky="w")
+
         parent.columnconfigure(1, weight=1)
     
+    def build_reenrich_settings(self, parent):
+        """Settings for reenrich_existing.py — the Fill Missing Metadata and
+        Backfill Page Counts buttons. Every key reenrich_existing.py reads lives
+        here; leaving any of them out would drop it from the file on Save."""
+        self.reenrich_vars = {}
+        cfg = self.config.get("reenrich", {})
+        d = DEFAULT_CONFIG["reenrich"]
+
+        ttk.Label(parent, text="What to skip", font=("", 9, "bold")).grid(
+            row=0, column=0, sticky="w")
+
+        ttk.Label(parent, text="Skip if enriched within:").grid(
+            row=1, column=0, sticky="w", pady=(5, 0))
+        self.reenrich_vars["min_age_days"] = tk.IntVar(
+            value=cfg.get("min_age_days", d["min_age_days"]))
+        ttk.Spinbox(parent, from_=0, to=3650,
+                    textvariable=self.reenrich_vars["min_age_days"],
+                    width=10).grid(row=1, column=1, sticky="w", pady=(5, 0))
+        ttk.Label(parent, text="days  (0 = ignore the date)", font=("", 8),
+                  foreground="gray").grid(row=1, column=2, sticky="w", padx=5)
+
+        ttk.Label(parent, text="Skip if already complete:").grid(
+            row=2, column=0, sticky="w", pady=(5, 0))
+        self.reenrich_vars["skip_threshold"] = tk.DoubleVar(
+            value=cfg.get("skip_threshold", d["skip_threshold"]))
+        ttk.Spinbox(parent, from_=0.0, to=1.0, increment=0.05,
+                    textvariable=self.reenrich_vars["skip_threshold"],
+                    width=10).grid(row=2, column=1, sticky="w", pady=(5, 0))
+        ttk.Label(parent, text="0–1  (0.7 = skip rows 70% filled in)",
+                  font=("", 8), foreground="gray").grid(row=2, column=2, sticky="w", padx=5)
+        ttk.Label(parent, text="Both of these are ignored by the Backfill Page Counts button, which forces past them",
+                  font=("", 8), foreground="gray").grid(row=3, column=1, columnspan=2, sticky="w")
+
+        ttk.Separator(parent, orient="horizontal").grid(
+            row=4, column=0, columnspan=3, sticky="ew", pady=(12, 6))
+        ttk.Label(parent, text="Books you are done with", font=("", 9, "bold")).grid(
+            row=5, column=0, sticky="w")
+
+        self.reenrich_vars["skip_decided"] = tk.BooleanVar(
+            value=cfg.get("skip_decided", d["skip_decided"]))
+        ttk.Checkbutton(parent, text="Skip Read / Ignored / Removed",
+                        variable=self.reenrich_vars["skip_decided"]).grid(
+            row=6, column=1, sticky="w", pady=(5, 0))
+        ttk.Label(parent, text="Books dismissed in the selector are never offered again, so enriching them costs a lookup for nothing",
+                  font=("", 8), foreground="gray").grid(row=7, column=1, columnspan=2, sticky="w")
+
+        self.reenrich_vars["skip_read"] = tk.BooleanVar(
+            value=cfg.get("skip_read", d["skip_read"]))
+        ttk.Checkbutton(parent, text="Skip rows whose Read column is Yes",
+                        variable=self.reenrich_vars["skip_read"]).grid(
+            row=8, column=1, sticky="w", pady=(5, 0))
+        ttk.Label(parent, text="Turn off if your Read column over-reports — older runs set it for Ignored and Removed too",
+                  font=("", 8), foreground="gray").grid(row=9, column=1, columnspan=2, sticky="w")
+
+        ttk.Separator(parent, orient="horizontal").grid(
+            row=10, column=0, columnspan=3, sticky="ew", pady=(12, 6))
+        ttk.Label(parent, text="Categories", font=("", 9, "bold")).grid(
+            row=11, column=0, sticky="w")
+
+        self.reenrich_vars["recategorize"] = tk.BooleanVar(
+            value=cfg.get("recategorize", d["recategorize"]))
+        ttk.Checkbutton(parent, text="Re-grade LengthCategory from PageCount",
+                        variable=self.reenrich_vars["recategorize"]).grid(
+            row=12, column=1, sticky="w", pady=(5, 0))
+        ttk.Label(parent, text="Runs before each re-enrich. Free — no lookups — and keeps the tags matching the selector's Length buttons",
+                  font=("", 8), foreground="gray").grid(row=13, column=1, columnspan=2, sticky="w")
+
+        parent.columnconfigure(1, weight=1)
+
     def save(self):
         # Collect all settings
         self.config["books_py"] = {
@@ -781,6 +941,9 @@ class SettingsDialog(tk.Toplevel):
         }
         self.config["storygraph"] = {
             k: v.get() for k, v in self.sg_vars.items()
+        }
+        self.config["reenrich"] = {
+            k: v.get() for k, v in self.reenrich_vars.items()
         }
         
         self.result = self.config
