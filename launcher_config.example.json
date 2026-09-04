@@ -55,6 +55,7 @@
     "min_age_days": 180,
     "skip_threshold": 0.7,
     "skip_decided": true,
-    "skip_read": true
+    "skip_read": true,
+    "recategorize": true
   }
 }

@@ -18,7 +18,15 @@ Skip logic (all configurable in launcher_config.json → "reenrich" section):
   - Rows enriched within the last N days are skipped (default 180 = 6 months)
   - Rows already >= X% complete across scored fields are skipped (default 70%)
 
-  --force overrides the last two only. The first two are opted out of with
+Category re-grading (recategorize, default true):
+  Before enriching anything, LengthCategory is re-derived from PageCount for
+  every row that has a page count, so the tags stay in step with the buckets the
+  book selector filters on (X-Short <100, Short <200, Medium 200-400, Long
+  400-600, Epic 600+). It is local arithmetic — no lookup, no model call — but
+  books.py still needs OPENAI_API_KEY present just to import.
+  --recategorize does only this pass and exits; --no-recategorize skips it.
+
+  --force overrides the last two skip rules only. The first two are opted out of with
   --include-decided and --include-read, so a forced run never quietly spends
   money on books you have finished with.
 
@@ -35,7 +43,9 @@ Options:
     --skip-threshold 0.8  Override: skip if fill % >= this value (0–1)
     --force               Ignore the age and fill% rules (read/removed still skipped)
     --include-decided     Also process books marked Read / Ignored / Removed
-    --include-read        Also process books whose Read column is Yes and process every row
+    --include-read        Also process books whose Read column is Yes
+    --recategorize        Only re-grade LengthCategory from existing page counts
+    --no-recategorize     Skip the category re-grade before enrichment and process every row
 
 Examples:
     # Re-enrich everything (respects skip rules from config)
@@ -47,6 +57,9 @@ Examples:
     # lookup_book_metadata always runs the AI enrichment step — so try
     # --limit 25 first to gauge the hit rate.
     python reenrich_existing.py --missing PageCount --force
+
+    # Fix categories that disagree with their page count — free, no lookups
+    python reenrich_existing.py --recategorize
 
     # Test on 10 books first
     python reenrich_existing.py --limit 10 --dry-run
@@ -122,6 +135,10 @@ CFG_SKIP_THRESHOLD  = float(_re_cfg.get("skip_threshold", 0.70))
 # it as well). Turn skip_read off if your Read column over-reports.
 CFG_SKIP_DECIDED    = bool(_re_cfg.get("skip_decided", True))
 CFG_SKIP_READ       = bool(_re_cfg.get("skip_read", True))
+# Re-grade LengthCategory from PageCount for rows that already have a page
+# count. Costs nothing — no lookup, no model call — and is what brings a sheet
+# back in step after the category boundaries move.
+CFG_RECATEGORIZE    = bool(_re_cfg.get("recategorize", True))
 
 # Fields counted when calculating fill percentage (mirrors books.py)
 ENRICHMENT_SCORED_FIELDS = [
@@ -333,9 +350,6 @@ def fetch_amazon_page_count(asin: str) -> int:
     except Exception:
         pass
     return 0
-    """True if a cell value should be treated as missing."""
-    v = clean_text(value)
-    return v == "" or v.lower() in ("nan", "none")
 
 
 def is_empty(value) -> bool:
@@ -373,6 +387,36 @@ def needs_work(row: pd.Series, missing_field: str | None) -> bool:
     return False
 
 
+def recategorize(df: pd.DataFrame) -> list[tuple[str, str, str, str]]:
+    """Re-derive LengthCategory from PageCount wherever the two disagree.
+
+    Local arithmetic only — no lookup and no model call — so it runs over the
+    whole sheet regardless of the skip rules. Rows without a page count are left
+    alone: there is nothing to grade them against.
+
+    Returns the rows it changed as (title, page count, old category, new).
+    """
+    if "LengthCategory" not in df.columns or "PageCount" not in df.columns:
+        return []
+
+    changes = []
+    for idx, row in df.iterrows():
+        derived = page_count_to_length_category(row.get("PageCount", ""))
+        if not derived:
+            continue  # no usable page count — leave whatever is there
+        current = clean_text(row.get("LengthCategory", ""))
+        if current == derived:
+            continue
+        df.at[idx, "LengthCategory"] = derived
+        changes.append((
+            clean_text(row.get("Title", "")),
+            clean_text(row.get("PageCount", "")),
+            current or "(blank)",
+            derived,
+        ))
+    return changes
+
+
 def apply_result(row: pd.Series, result: dict) -> tuple[pd.Series, list[str]]:
     """
     Merge lookup result into row, only filling genuinely empty cells.
@@ -406,12 +450,9 @@ def apply_result(row: pd.Series, result: dict) -> tuple[pd.Series, list[str]]:
             changed.append(field)
             continue
 
-        # LengthCategory: derive from PageCount if possible
-            if current:
-                continue  # already set
-            row[field] = new_str
-            changed.append(field)
-            continue
+        # LengthCategory needs no special case: an empty cell is filled by the
+        # generic path below, and the block after this loop re-derives it from
+        # the page count whenever one was just filled in.
 
         # All other fields: only fill if currently empty
         if current:
@@ -485,6 +526,8 @@ def main() -> None:
     parser.add_argument("--force",          action="store_true", help="Ignore the age and fill%% skip rules (read/removed books are still skipped)")
     parser.add_argument("--include-decided", action="store_true", help="Also process books with a selector decision of Read/Ignored/Removed")
     parser.add_argument("--include-read",    action="store_true", help="Also process books whose Read column is Yes")
+    parser.add_argument("--recategorize",    action="store_true", help="Only re-grade LengthCategory from existing page counts, then exit (no lookups, no API cost)")
+    parser.add_argument("--no-recategorize", action="store_true", help="Skip the category re-grade that normally runs before enrichment")
     args = parser.parse_args()
 
     missing_field = args.missing.strip() or None
@@ -512,6 +555,7 @@ def _run(args, missing_field: str | None) -> None:
     force          = args.force
     skip_decided   = CFG_SKIP_DECIDED and not args.include_decided
     skip_read      = CFG_SKIP_READ    and not args.include_read
+    do_recategorize = (CFG_RECATEGORIZE or args.recategorize) and not args.no_recategorize
 
     log("=" * 60)
     log("Re-Enrichment Script for books_output.xlsx")
@@ -522,6 +566,7 @@ def _run(args, missing_field: str | None) -> None:
     log(f"Skip fill% : {skip_threshold:.0%}+ complete")
     log(f"Skip decided: {'yes — read/ignored/removed left alone' if skip_decided else 'no'}")
     log(f"Skip read  : {'yes — Read=Yes left alone' if skip_read else 'no'}")
+    log(f"Recategorize: {'yes' if do_recategorize else 'no'}")
     log(f"Force      : {force}")
     log(f"Dry run    : {args.dry_run}")
     log("=" * 60)
@@ -552,6 +597,24 @@ def _run(args, missing_field: str | None) -> None:
             df[col] = df[col].astype(object)
 
     log(f"Loaded {len(df)} rows from '{SHEET_NAME}'")
+
+    # Re-grade categories before anything else: it is free, it needs no network,
+    # and it is the only thing that fixes rows whose page count was always fine
+    # but whose category was written under different boundaries.
+    if do_recategorize:
+        changes = recategorize(df)
+        log(f"Recategorized     : {len(changes)} row(s)")
+        for title, pages, was, now in changes[:20]:
+            log(f"  {title[:45]:45} {pages:>6} pg  {was} -> {now}")
+        if len(changes) > 20:
+            log(f"  ... and {len(changes) - 20} more")
+        if changes and not args.dry_run:
+            save_excel(df)
+            log("Saved category changes.")
+
+    if args.recategorize:
+        log("--recategorize given: category pass only, nothing else to do.")
+        return
 
     # Two-pass eligibility: needs_work (has gaps) AND not skipped by date/fill%
     has_gaps_indices = [
