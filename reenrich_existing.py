@@ -8,9 +8,19 @@ but were never fully enriched.
 Uses the same lookup pipeline as books.py (Google Books → Open Library → Amazon
 ASIN → OpenAI AI enrichment) without touching any row that is already complete.
 
-Skip logic (both configurable in launcher_config.json → "reenrich" section):
+Skip logic (all configurable in launcher_config.json → "reenrich" section):
+  - Books with a selector decision of Read / Ignored / Removed are skipped
+    (skip_decided, default true) — they are never offered again, so enriching
+    them spends a lookup and an OpenAI call on nothing.
+  - Books whose Read column is Yes are skipped (skip_read, default true). Turn
+    this one off if your Read column over-reports: earlier versions of
+    apply_reading_log.py set Read = Yes for Ignored and Removed as well.
   - Rows enriched within the last N days are skipped (default 180 = 6 months)
   - Rows already >= X% complete across scored fields are skipped (default 70%)
+
+  --force overrides the last two only. The first two are opted out of with
+  --include-decided and --include-read, so a forced run never quietly spends
+  money on books you have finished with.
 
 Usage:
     python reenrich_existing.py [options]
@@ -23,7 +33,9 @@ Options:
     --sheet NAME          Sheet name to read/write (default: All Books)
     --min-age-days N      Override: skip if enriched within N days (0 = ignore date)
     --skip-threshold 0.8  Override: skip if fill % >= this value (0–1)
-    --force               Ignore all skip conditions and process every row
+    --force               Ignore the age and fill% rules (read/removed still skipped)
+    --include-decided     Also process books marked Read / Ignored / Removed
+    --include-read        Also process books whose Read column is Yes and process every row
 
 Examples:
     # Re-enrich everything (respects skip rules from config)
@@ -41,6 +53,9 @@ Examples:
 
     # Force re-enrich everything regardless of age or fill %
     python reenrich_existing.py --force
+
+    # Include the books you have already read or dismissed
+    python reenrich_existing.py --force --include-decided --include-read
 """
 
 from __future__ import annotations
@@ -99,6 +114,14 @@ _re_cfg = _launcher_cfg.get("reenrich", {})
 CFG_MIN_AGE_DAYS    = int(_re_cfg.get("min_age_days", 180))
 # Skip a row if fill% across scored fields >= this value (0.0–1.0)
 CFG_SKIP_THRESHOLD  = float(_re_cfg.get("skip_threshold", 0.70))
+# Skip rows you have already dealt with: a book you will never be offered again
+# is a lookup and an OpenAI call spent on nothing. Two separate switches because
+# the two columns are not equally trustworthy — "Selector Decision" is written
+# only by apply_reading_log.py, while "Read" has historical noise (earlier
+# versions set it to Yes for Ignored and Removed too, and StoryGraph sync sets
+# it as well). Turn skip_read off if your Read column over-reports.
+CFG_SKIP_DECIDED    = bool(_re_cfg.get("skip_decided", True))
+CFG_SKIP_READ       = bool(_re_cfg.get("skip_read", True))
 
 # Fields counted when calculating fill percentage (mirrors books.py)
 ENRICHMENT_SCORED_FIELDS = [
@@ -167,10 +190,8 @@ def _load_books_module():
             print("The Fill Missing Metadata step needs the API key", flush=True)
             print("to fill in Genre, Tropes, and Triggers via AI.", flush=True)
             print("", flush=True)
-            print("If you only want page counts (no AI), run from", flush=True)
-            print("the command line with:", flush=True)
-            print("  python reenrich_existing.py --missing PageCount", flush=True)
-            print("(that step only uses Google Books -- no API key needed)", flush=True)
+            print("Every lookup goes through the AI enrichment step, so", flush=True)
+            print("the key is required even for --missing PageCount.", flush=True)
             print("=" * 60, flush=True)
             sys.exit(1)
         raise
@@ -188,9 +209,31 @@ _SCORED_FIELDS   = getattr(books, "ENRICHMENT_SCORED_FIELDS", ENRICHMENT_SCORED_
 _MIN_AGE_DAYS    = CFG_MIN_AGE_DAYS    # command-line can override later
 _SKIP_THRESHOLD  = CFG_SKIP_THRESHOLD
 
+# Written by apply_reading_log.py: "Selector Decision" records what you chose
+# in the book selector, and "Read" is Yes only for a genuine Read (StoryGraph
+# sync sets it too). Older sheets have neither column — a missing column just
+# means nothing has been decided yet.
+DECISION_COL = "Selector Decision"
+READ_COL     = "Read"
+DISMISSED_DECISIONS = {"read", "ignored", "removed"}
+
 # ---------------------------------------------------------------------------
 # Skip-logic helpers
 # ---------------------------------------------------------------------------
+def is_yes(value) -> bool:
+    return clean_text(value).lower() in ("yes", "y", "true", "1")
+
+
+def finished_reason(row: pd.Series, skip_decided: bool, skip_read: bool) -> str:
+    """Why this book is already dealt with, or "" if it still needs offering."""
+    decision = clean_text(row.get(DECISION_COL, ""))
+    if skip_decided and decision.lower() in DISMISSED_DECISIONS:
+        return f"selector decision: {decision}"
+    if skip_read and is_yes(row.get(READ_COL, "")):
+        return "marked Read"
+    return ""
+
+
 
 def fill_pct(row: pd.Series) -> float:
     """Fraction of scored enrichment fields that are non-empty (0.0–1.0)."""
@@ -224,13 +267,22 @@ def last_enriched_date(row: pd.Series) -> "datetime.date | None":
     return None
 
 
-def should_skip(row: pd.Series, min_age_days: int, skip_threshold: float, force: bool) -> tuple[bool, str]:
+def should_skip(row: pd.Series, min_age_days: int, skip_threshold: float,
+                force: bool, skip_decided: bool = True,
+                skip_read: bool = True) -> tuple[bool, str, str]:
     """
-    Return (skip, reason).
+    Return (skip, reason, kind) where kind is "finished", "date" or "fill".
     skip=True means don't re-enrich this row.
     """
+    # Checked ahead of --force on purpose: force means "ignore the freshness and
+    # fill-% thresholds", not "spend a lookup and a model call on a book that
+    # will never be offered again". --include-read/--include-decided opt out.
+    reason = finished_reason(row, skip_decided, skip_read)
+    if reason:
+        return True, reason, "finished"
+
     if force:
-        return False, ""
+        return False, "", ""
 
     # Date check
     if min_age_days > 0:
@@ -238,14 +290,14 @@ def should_skip(row: pd.Series, min_age_days: int, skip_threshold: float, force:
         if last is not None:
             age = (datetime.date.today() - last).days
             if age < min_age_days:
-                return True, f"enriched {age}d ago (< {min_age_days}d)"
+                return True, f"enriched {age}d ago (< {min_age_days}d)", "date"
 
     # Fill% check
     pct = fill_pct(row)
     if pct >= skip_threshold:
-        return True, f"{pct:.0%} complete (>= {skip_threshold:.0%} threshold)"
+        return True, f"{pct:.0%} complete (>= {skip_threshold:.0%} threshold)", "fill"
 
-    return False, ""
+    return False, "", ""
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -430,7 +482,9 @@ def main() -> None:
     parser.add_argument("--sheet",          type=str,   default=SHEET_NAME,         help="Sheet name")
     parser.add_argument("--min-age-days",   type=int,   default=CFG_MIN_AGE_DAYS,   help="Skip if enriched within N days (0=off)")
     parser.add_argument("--skip-threshold", type=float, default=CFG_SKIP_THRESHOLD, help="Skip if fill%% >= this value 0–1 (default 0.70)")
-    parser.add_argument("--force",          action="store_true", help="Ignore all skip conditions")
+    parser.add_argument("--force",          action="store_true", help="Ignore the age and fill%% skip rules (read/removed books are still skipped)")
+    parser.add_argument("--include-decided", action="store_true", help="Also process books with a selector decision of Read/Ignored/Removed")
+    parser.add_argument("--include-read",    action="store_true", help="Also process books whose Read column is Yes")
     args = parser.parse_args()
 
     missing_field = args.missing.strip() or None
@@ -456,6 +510,8 @@ def _run(args, missing_field: str | None) -> None:
     min_age_days   = args.min_age_days
     skip_threshold = args.skip_threshold
     force          = args.force
+    skip_decided   = CFG_SKIP_DECIDED and not args.include_decided
+    skip_read      = CFG_SKIP_READ    and not args.include_read
 
     log("=" * 60)
     log("Re-Enrichment Script for books_output.xlsx")
@@ -464,6 +520,8 @@ def _run(args, missing_field: str | None) -> None:
     log(f"Limit      : {args.limit or 'no limit'}")
     log(f"Skip age   : {'disabled' if min_age_days == 0 else f'< {min_age_days} days'}")
     log(f"Skip fill% : {skip_threshold:.0%}+ complete")
+    log(f"Skip decided: {'yes — read/ignored/removed left alone' if skip_decided else 'no'}")
+    log(f"Skip read  : {'yes — Read=Yes left alone' if skip_read else 'no'}")
     log(f"Force      : {force}")
     log(f"Dry run    : {args.dry_run}")
     log("=" * 60)
@@ -503,20 +561,19 @@ def _run(args, missing_field: str | None) -> None:
     log(f"Rows with gaps    : {len(has_gaps_indices)}")
 
     eligible_indices = []
-    skip_date_count  = 0
-    skip_pct_count   = 0
+    skipped_by_kind = {"finished": 0, "date": 0, "fill": 0}
     for i in has_gaps_indices:
-        skip, reason = should_skip(df.loc[i], min_age_days, skip_threshold, force)
+        skip, reason, kind = should_skip(
+            df.loc[i], min_age_days, skip_threshold, force, skip_decided, skip_read
+        )
         if skip:
-            if "ago" in reason:
-                skip_date_count += 1
-            else:
-                skip_pct_count += 1
+            skipped_by_kind[kind] += 1
         else:
             eligible_indices.append(i)
 
-    log(f"Skipped (recent)  : {skip_date_count}")
-    log(f"Skipped (fill %)  : {skip_pct_count}")
+    log(f"Skipped (read/removed): {skipped_by_kind['finished']}")
+    log(f"Skipped (recent)  : {skipped_by_kind['date']}")
+    log(f"Skipped (fill %)  : {skipped_by_kind['fill']}")
     log(f"Will process      : {len(eligible_indices)}")
 
     if args.limit:
