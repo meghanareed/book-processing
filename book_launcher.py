@@ -972,6 +972,35 @@ def build_ui(config: dict) -> tk.Tk:
         style="Sub.TLabel",
     ).pack(side="left", padx=8)
 
+    pagecount_frame = ttk.Frame(container)
+    pagecount_frame.pack(fill="x", pady=4)
+    ttk.Button(
+        pagecount_frame,
+        text="Backfill Page Counts",
+        style="Tool.TButton",
+        width=24,
+        # --force is not optional here. The default skip rules (enriched in the
+        # last 180 days, or already 70% complete) leave out almost every row
+        # whose only gap is a page count, so without it the run reports
+        # "Nothing to do" and nothing gets filled.
+        command=lambda: run_piped(
+            "Backfill Page Counts",
+            "reenrich_existing.py",
+            ["--missing", "PageCount", "--force"],
+            status_var,
+            log_widget,
+            status_label,
+            config,
+        ),
+    ).pack(side="left")
+    ttk.Label(
+        pagecount_frame,
+        text="Page counts only — long run, one OpenAI call per book",
+        style="Sub.TLabel",
+        wraplength=200,
+        justify="left",
+    ).pack(side="left", padx=8)
+
     folder_frame = ttk.Frame(container)
     folder_frame.pack(fill="x", pady=4)
     ttk.Button(
