@@ -24,7 +24,7 @@
 #   ASIN       : extracted from element id, e.g. "content-title-B0CKJSB3XN"
 #   READ badge : div#content-read-badge       (sibling of card root, OUTSIDE it,
 #                                              inside the same DigitalEntitySummary container)
-#   Next page  : a#page-RIGHT_PAGE
+#   Next page  : not used — pages are addressed by ?pageNumber=N, see go_to_page
 
 import re
 import sys
@@ -358,6 +358,17 @@ def is_logged_in(page) -> bool:
     return False
 
 
+# How many consecutive pages may repeat only already-seen books before we call
+# it the end of the library.  One is enough: pages are addressed by URL now, so
+# a page with nothing new on it means Amazon has run out of list to serve.
+MAX_STALLED_PAGES = 1
+
+# Every ASIN seen so far this run.  Module level on purpose: the run is split
+# into batches and the repeats we need to catch happen BETWEEN batches, so a
+# per-batch set would never notice them.
+_SEEN_ASINS: set[str] = set()
+
+
 def library_url(page_num: int = 1) -> str:
     """Build the Amazon library URL for a given page number."""
     if page_num <= 1:
@@ -540,59 +551,35 @@ def scrape_current_page(page) -> list[dict]:
     return books
 
 
-def go_to_next_page(page) -> bool:
+def go_to_page(page, page_num: int) -> bool:
     """
-    Click the Next pagination link and wait for new cards to appear.
-    Primary selector: a#page-RIGHT_PAGE (confirmed from real HTML).
+    Navigate straight to a page by URL and wait for its cards.
 
-    Diagnosis notes printed so you can see exactly why pagination stopped.
+    This used to click Amazon's Next link (a#page-RIGHT_PAGE).  That is not
+    safe on a long run: after a handful of clicks in one session Amazon starts
+    serving the LAST page of the list instead of the next one, silently and
+    with no error.  A scrape then reads the final partial page over and over
+    while its own page counter keeps climbing -- one run walked to page 409
+    re-reading the same four books.  Every direct ?pageNumber= navigation in
+    that same run returned the right page, so address pages by URL instead.
+
+    Returns False when the page renders no cards, which is how the real end of
+    the library is detected now.
     """
-    selectors = [
-        "a#page-RIGHT_PAGE",                          # primary — confirmed
-        "a[aria-label='Next']",
-        "a.page-link[aria-label='Next']",
-        "a:has-text('»')",
-        "span.a-last:not(.a-disabled) a",
-    ]
+    target = library_url(page_num)
+    try:
+        page.goto(target, wait_until="domcontentloaded")
+    except (PlaywrightError, PlaywrightTimeoutError):
+        pass  # the SPA fires its own internal redirect; the card wait below decides
 
-    for sel in selectors:
-        try:
-            btn = page.locator(sel).first
-            if btn.count() == 0:
-                continue
-            if not btn.is_visible(timeout=2_000):
-                log(f"    [PAGINATION] '{sel}' found but not visible — skipping.")
-                continue
+    try:
+        page.wait_for_selector("div.digital_entity_details", timeout=12_000)
+    except PlaywrightTimeoutError:
+        log(f"    [PAGINATION] No cards on page {page_num} — treating as past the end.")
+        return False
 
-            # Only treat aria-disabled="true" as disabled — NOT class substring match,
-            # which was a false-positive bug (Amazon class names contain "disabled" as
-            # part of colour/style tokens on perfectly active buttons).
-            aria_disabled = (btn.get_attribute("aria-disabled") or "").lower()
-            if aria_disabled == "true":
-                log(f"    [PAGINATION] '{sel}' is aria-disabled=true — last page reached.")
-                return False
-
-            log(f"    [PAGINATION] Clicking '{sel}'…")
-            btn.click()
-
-            # Wait for new cards rather than domcontentloaded — Amazon is a SPA and
-            # domcontentloaded can fire before the new page content renders, OR it can
-            # be interrupted by the SPA's own internal navigation causing a crash.
-            try:
-                page.wait_for_selector("div.digital_entity_details", timeout=12_000)
-            except PlaywrightTimeoutError:
-                log("    [PAGINATION] Cards did not appear after click — may be last page.")
-                return False
-
-            time.sleep(PAGE_LOAD_WAIT)
-            return True
-
-        except (PlaywrightError, PlaywrightTimeoutError) as e:
-            log(f"    [PAGINATION] Error on selector '{sel}': {e}")
-            continue
-
-    log("    [PAGINATION] No Next button found in DOM — treating as last page.")
-    return False
+    time.sleep(PAGE_LOAD_WAIT)
+    return True
 
 
 def scrape_amazon_library(page, start_page: int = 1, stop_after_page: int = 0) -> list[dict]:
@@ -602,6 +589,12 @@ def scrape_amazon_library(page, start_page: int = 1, stop_after_page: int = 0) -
     """
     all_books: list[dict] = []
     page_num = start_page - 1   # incremented at the top of each iteration
+
+    # Amazon answers a page past the end with the last page's cards rather than
+    # an error, so a scrape that trusts its own counter can read the same books
+    # forever.  Track the ASINs already seen and stop once a page brings nothing
+    # new -- that is the only reliable "we are off the end" signal.
+    stalled_pages = 0
 
     while True:
         page_num += 1
@@ -613,6 +606,20 @@ def scrape_amazon_library(page, start_page: int = 1, stop_after_page: int = 0) -
         log(f"  Page {page_num}: {len(books)} cards  ({read_ct} READ, {unread_ct} unread)  |  batch running total: {len(all_books) + len(books)}")
         all_books.extend(books)
 
+        page_asins = {clean(bk.get("asin", "")) for bk in books if clean(bk.get("asin", ""))}
+        fresh = page_asins - _SEEN_ASINS
+        _SEEN_ASINS.update(page_asins)   # mutate, never rebind — a bare
+                                         # '|=' would make the name local
+        if books and not fresh:
+            stalled_pages += 1
+            log(f"  Page {page_num} repeated books already seen "
+                f"({stalled_pages}/{MAX_STALLED_PAGES}) — Amazon is re-serving a page.")
+            if stalled_pages >= MAX_STALLED_PAGES:
+                log(f"  STOP: {MAX_STALLED_PAGES} page(s) in a row brought nothing new — end of library.")
+                break
+        else:
+            stalled_pages = 0
+
         if TEST_PAGE_LIMIT and page_num >= TEST_PAGE_LIMIT:
             log(f"  TEST_PAGE_LIMIT={TEST_PAGE_LIMIT} — stopping early.")
             break
@@ -621,7 +628,7 @@ def scrape_amazon_library(page, start_page: int = 1, stop_after_page: int = 0) -
             log(f"  Batch end (page {stop_after_page}) — batch complete, browser stays open for next batch.")
             break
 
-        advanced = go_to_next_page(page)
+        advanced = go_to_page(page, page_num + 1)
         if not advanced:
             log(f"  Pagination stopped after page {page_num} — see [PAGINATION] lines above for reason.")
             break
@@ -865,6 +872,7 @@ def _main() -> None:
     if not EXCEL_PATH.exists():
         raise FileNotFoundError(f"Excel not found: {EXCEL_PATH}")
 
+    _SEEN_ASINS.clear()
     batch_size   = max(1, BATCH_SIZE)
     current_page = START_PAGE
     end_page     = END_PAGE
@@ -905,12 +913,24 @@ def _main() -> None:
                 log(f"{'='*60}")
 
                 # ── Scrape in existing session ────────────────────────────
+                asins_before = set(_SEEN_ASINS)
                 batch_books = _scrape_batch(page, batch_first, batch_last)
                 grand_total += len(batch_books)
+                batch_new_asins = {clean(b.get("asin", "")) for b in batch_books
+                                   if clean(b.get("asin", ""))} - asins_before
 
                 unread = [b for b in batch_books if not b["is_read"]]
                 read   = [b for b in batch_books if b["is_read"]]
                 log(f"Batch {batch_num}: {len(batch_books)} books  |  {len(read)} READ  |  {len(unread)} unread")
+
+                # A batch that is non-empty but wholly made of books an earlier
+                # batch already returned means Amazon is re-serving the last
+                # page.  Without this the run marches on forever: one scrape
+                # reached page 409 re-reading the same four books.
+                if batch_books and not batch_new_asins:
+                    log(f"Batch {batch_num}: every book was already seen — "
+                        f"Amazon is re-serving the last page. End of library.")
+                    break
 
                 # ── Merge + enrich + save ─────────────────────────────────
                 if batch_books:
