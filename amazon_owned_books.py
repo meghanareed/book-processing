@@ -1,11 +1,21 @@
 # amazon_owned_books.py
 #
 # Scrapes https://www.amazon.com/hz/mycd/digital-console/contentlist/booksAll/dateDsc/
-# Skips any book whose card contains the READ badge.
-# For every unread book:
-#   - Already in "All Books" (by DuplicateKey OR ASIN)  -> set Owned = "Yes"
-#   - Brand new                                          -> enrich via books.py pipeline,
-#                                                           append with Owned = "Yes"
+# Owned = "Yes" means "this is in my Amazon library", read or not.  It used to
+# mean "in my library AND unread", which made the owned count in the selector
+# impossible to reconcile with the Kindle app.  Whether a book is still to read
+# is what the Read column is for, and the StoryGraph push now filters on both.
+#
+# For every book on a library card:
+#   - Unread, already in "All Books" (by DuplicateKey OR ASIN)
+#                                         -> set Owned = "Yes"
+#   - Unread, brand new                   -> enrich via books.py pipeline,
+#                                            append with Owned = "Yes"
+#   - READ badge, already in "All Books"  -> set Owned = "Yes", Read = "Yes",
+#                                            Skip Storygraph = "Yes"
+#   - READ badge, not in the sheet        -> left alone.  Adding it would cost an
+#                                            OpenAI enrichment call for a book
+#                                            that is never going to be offered.
 #
 # Selectors verified against real Amazon library HTML (March 2026):
 #   Card root  : div.digital_entity_details   (one per book)
@@ -661,8 +671,10 @@ def merge_amazon_books(
 
     Pass 2 — Read books (run after Pass 1 so newly appended rows are included):
       • Already in sheet (DuplicateKey OR ASIN match)
-            → set Read = "Yes", Skip Storygraph = "Yes"
-      • Not in sheet  → do nothing (we only track owned/unread books)
+            → set Owned = "Yes", Read = "Yes", Skip Storygraph = "Yes"
+      • Not in sheet  → do nothing.  The book is owned, but enriching a title
+        you have already finished buys nothing — it is filtered out of every
+        downstream step anyway.
 
     Returns (updated_df, unread_updated, unread_appended, read_updated, read_skipped).
     """
@@ -749,6 +761,11 @@ def merge_amazon_books(
         if matched:
             for pos in matched:
                 changed = False
+                # A read book is still an owned book.  Pass 1 never reaches
+                # these rows, so without this they stay Owned-blank forever.
+                if clean(df.at[pos, "Owned"]) != "Yes":
+                    df.at[pos, "Owned"] = "Yes"
+                    changed = True
                 if clean(df.at[pos, "Read"]) != "Yes":
                     df.at[pos, "Read"] = "Yes"
                     changed = True

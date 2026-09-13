@@ -4,7 +4,7 @@ apply_reading_log.py
 Reads a decisions JSON exported by my-book-selector.html and applies it to
 both spreadsheets:
 
-  1. books_output.xlsx    -> sets column Y ("Read") to "Yes" for any decision
+  1. books_output.xlsx    -> sets the "Read" column to "Yes" for any decision
                             with status Read / Ignored / Removed (i.e. anything
                             that should stop appearing in the selector).
   2. my-reading-log.xlsx  -> appends a row (Title, Author, Genre, Status,
@@ -73,9 +73,10 @@ def _data_file(name: str) -> Path:
 BOOKS_OUTPUT = _data_file("books_output.xlsx")
 READING_LOG = _data_file("my-reading-log.xlsx")
 
-# 1-based column index in books_output.xlsx for the "Read" column.
-# Column Y == column 25.  We verify the header on load.
-READ_COL_INDEX = 25
+# "Read" used to be addressed by position (column Y == 25) with only a warning
+# when the header disagreed.  Column order is not stable — books.py rewrites the
+# whole sheet — so a run after any reshuffle wrote "Yes" into whatever happened
+# to sit at 25, or into a blank column past the end.  Look it up by name.
 READ_COL_HEADER = "Read"
 
 # Records what you chose in the selector, kept apart from "Read" so that
@@ -134,7 +135,7 @@ def norm(value) -> str:
 
 
 def update_books_output(decisions: list[dict]) -> tuple[int, int]:
-    """Mark each decided book as Read=Yes in books_output.xlsx column Y.
+    """Mark each decided book as Read=Yes in the books_output.xlsx "Read" column.
     Returns (updated_count, missing_count)."""
 
     if not BOOKS_OUTPUT.exists():
@@ -142,15 +143,9 @@ def update_books_output(decisions: list[dict]) -> tuple[int, int]:
         return 0, len(decisions)
 
     wb = openpyxl.load_workbook(BOOKS_OUTPUT)
-    ws = wb.active
-
-    # Verify column Y header to catch schema drift
-    header_val = ws.cell(row=1, column=READ_COL_INDEX).value
-    if header_val != READ_COL_HEADER:
-        print(
-            f"  WARN: column Y header is {header_val!r}, expected {READ_COL_HEADER!r}. "
-            "Update will still proceed, but double-check your column order."
-        )
+    # The catalog lives on "All Books"; wb.active is whatever sheet was last
+    # selected in Excel, which is not reliably that one.
+    ws = wb["All Books"] if "All Books" in wb.sheetnames else wb.active
 
     # Map each header to its 1-based column index
     headers: dict[str, int] = {}
@@ -191,12 +186,19 @@ def update_books_output(decisions: list[dict]) -> tuple[int, int]:
             if t or a:
                 title_author_idx[(t, a)] = r
 
-    # The decision column is new, so add it the first time this runs.
-    c_decision = col(DECISION_COL_HEADER)
-    if c_decision is None:
-        c_decision = ws.max_column + 1
-        ws.cell(row=1, column=c_decision).value = DECISION_COL_HEADER
-        print(f"  Added '{DECISION_COL_HEADER}' column at position {c_decision}")
+    # Both of these are added the first time they are needed.  "Read" can be
+    # missing on a workbook written before books.py learned to preserve it.
+    def ensure_col(header: str) -> int:
+        idx = col(header)
+        if idx is None:
+            idx = ws.max_column + 1
+            ws.cell(row=1, column=idx).value = header
+            headers[header] = idx
+            print(f"  Added '{header}' column at position {idx}")
+        return idx
+
+    c_decision = ensure_col(DECISION_COL_HEADER)
+    c_read = ensure_col(READ_COL_HEADER)
 
     # Match each decision and update
     updated = 0
@@ -228,7 +230,7 @@ def update_books_output(decisions: list[dict]) -> tuple[int, int]:
             # Only a genuine Read marks the book as read.  Ignored and Removed
             # stop it being offered again via the decision column instead.
             if d["decision"] in READ_DECISIONS:
-                ws.cell(row=row_num, column=READ_COL_INDEX).value = "Yes"
+                ws.cell(row=row_num, column=c_read).value = "Yes"
                 marked_read += 1
             updated += 1
         else:
@@ -322,10 +324,13 @@ def backfill_decisions(apply_changes: bool) -> None:
     print(f"  Read {len(logged)} decision(s) from {READING_LOG.name}")
 
     wb = openpyxl.load_workbook(BOOKS_OUTPUT)
-    ws = wb.active
+    ws = wb["All Books"] if "All Books" in wb.sheetnames else wb.active
 
     headers = {str(ws.cell(row=1, column=c).value).strip(): c
                for c in range(1, ws.max_column + 1) if ws.cell(row=1, column=c).value}
+    # By name, not by position — this branch erases values, so writing to the
+    # wrong column would blank out real data.  Nothing to clear if it is absent.
+    c_read = headers.get(READ_COL_HEADER)
     c_decision = headers.get(DECISION_COL_HEADER)
     if c_decision is None:
         c_decision = ws.max_column + 1
@@ -346,8 +351,8 @@ def backfill_decisions(apply_changes: bool) -> None:
         if not norm(ws.cell(row=r, column=c_decision).value):
             ws.cell(row=r, column=c_decision).value = status
             tagged += 1
-        if status not in READ_DECISIONS:
-            read_cell = ws.cell(row=r, column=READ_COL_INDEX)
+        if status not in READ_DECISIONS and c_read:
+            read_cell = ws.cell(row=r, column=c_read)
             if norm(read_cell.value) == "yes":
                 read_cell.value = ""
                 cleared += 1

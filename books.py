@@ -112,6 +112,32 @@ ALL_BOOKS_COLUMNS = [
     "DuplicateKey", "Last Enriched", "Selector Decision"
 ]
 
+# Columns this script never writes but must never destroy either.  The Amazon
+# scraper, the StoryGraph tools and the selector all record state here, and a
+# screenshot run rewrites every sheet from scratch — so anything missing from
+# the output frame is silently erased the next time books.py runs.  Keeping the
+# list explicit means a fresh workbook still gets the columns in a sane order;
+# anything else the other tools invent later is carried through by name below.
+EXTERNAL_COLUMNS = [
+    "Owned", "Read", "Skip Storygraph",
+    "StoryGraph Owned", "StoryGraph Date", "Short Title",
+]
+
+# Full column order for the All Books sheet.
+SHEET_COLUMNS = ALL_BOOKS_COLUMNS + EXTERNAL_COLUMNS
+
+
+def is_junk_column(name) -> bool:
+    """True for a column with no real header.
+
+    pandas names a headerless column "Unnamed: 7".  Those are the debris of
+    writes that landed past the end of the sheet — apply_reading_log.py used to
+    put "Yes" in column 25 whether or not anything was there — and preserving
+    unknown columns by name would otherwise keep them forever.
+    """
+    text = str(name).strip()
+    return not text or text.lower().startswith("unnamed:")
+
 # =========================
 # ENRICHMENT SKIP CONFIG
 # =========================
@@ -1005,7 +1031,7 @@ def lookup_book_metadata(title: str, author: str, need_fields=None,
 def ensure_all_books_columns(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
 
-    for col in ALL_BOOKS_COLUMNS:
+    for col in SHEET_COLUMNS:
         if col not in df.columns:
             if col == "Confidence":
                 df[col] = 0.0
@@ -1013,6 +1039,11 @@ def ensure_all_books_columns(df: pd.DataFrame) -> pd.DataFrame:
                 df[col] = ""
 
     for col in TEXT_COLUMNS:
+        df[col] = df[col].apply(clean_text)
+
+    # Read straight off the sheet these arrive as NaN for every blank cell,
+    # which would otherwise travel as the string "nan".
+    for col in EXTERNAL_COLUMNS:
         df[col] = df[col].apply(clean_text)
 
     for col in ["Genre", "Tropes", "Triggers"]:
@@ -1026,7 +1057,51 @@ def ensure_all_books_columns(df: pd.DataFrame) -> pd.DataFrame:
     # zero, and re-grades a book the moment a real page count turns up for it.
     df["LengthCategory"] = df["PageCount"].apply(page_count_to_length_category)
 
-    return df[ALL_BOOKS_COLUMNS]
+    # Anything the other tools added that this script has never heard of rides
+    # along at the end rather than being dropped on the floor.
+    extras = [c for c in df.columns
+              if c not in SHEET_COLUMNS and not str(c).startswith("_")
+              and not is_junk_column(c)]
+    return df[SHEET_COLUMNS + extras]
+
+
+# State that belongs to the book rather than to the screenshot it came from.
+# Image, Confidence and Needs Review describe one photo and stay per-row; these
+# describe the book and have to follow it across every row that shares its key.
+PER_BOOK_STATE = EXTERNAL_COLUMNS + ["Last Enriched", "Selector Decision"]
+
+
+def carry_book_state(df: pd.DataFrame) -> pd.DataFrame:
+    """Spread the per-book state across every row sharing a DuplicateKey.
+
+    Re-photographing a book already in the sheet produces a second row with
+    Owned/Read blank, and the de-duplication below keeps whichever row scored
+    best on metadata.  Without this the blank row can be the one that survives,
+    losing the Amazon and StoryGraph state even though no column was dropped.
+    """
+    # Columns another tool added are per-book too, so they travel the same way.
+    unknown = [c for c in df.columns
+               if c not in SHEET_COLUMNS and not str(c).startswith("_")
+               and not is_junk_column(c)]
+    present = [c for c in PER_BOOK_STATE + unknown if c in df.columns]
+    if not present or "DuplicateKey" not in df.columns:
+        return df
+
+    keys = df["DuplicateKey"].apply(clean_text)
+    keyed = keys != ""          # rows with no key can't be grouped with anything
+    if not keyed.any():
+        return df
+
+    for col in present:
+        values = df[col].apply(clean_text)
+        filled = values.ne("") & keyed
+        if not filled.any():
+            continue
+        # First non-empty value wins for each key; sheet order decides ties.
+        best = values[filled].groupby(keys[filled]).first()
+        df[col] = values.where(values.ne(""), keys.map(best)).fillna("")
+
+    return df
 
 
 def load_existing_all_books() -> pd.DataFrame:
@@ -1153,6 +1228,7 @@ def build_excel_from_progress() -> None:
 
     combined_raw = pd.concat([existing_all, df_progress], ignore_index=True)
     combined_raw = ensure_all_books_columns(combined_raw)
+    combined_raw = carry_book_state(combined_raw)
 
     combined_raw["_fill_score"] = metadata_fill_score(combined_raw)
     combined_raw = combined_raw.sort_values(
@@ -1210,30 +1286,30 @@ def build_excel_from_progress() -> None:
         .reset_index(drop=True)
     )
 
+    # SHEET_COLUMNS first, then anything another tool added since, then never
+    # the internal scratch columns.
+    sheet_order = SHEET_COLUMNS + [
+        c for c in best_per_book.columns
+        if c not in SHEET_COLUMNS and not str(c).startswith("_")
+        and not is_junk_column(c)
+    ]
+
     output_unique = df_unique.loc[:, [
         "Title", "Author", "Confidence", "Needs Review",
         "ISBN_10", "ISBN_13", "ASIN", "Lookup Source",
         "Description", "Genre", "PageCount", "LengthCategory", "AgeRange", "Tropes", "Triggers",
         "Metadata Enriched",
         "StoryGraph Status", "StoryGraph Matched Query", "StoryGraph Notes", "StoryGraph Completed"
-    ]]
+    ] + [c for c in EXTERNAL_COLUMNS if c in df_unique.columns]]
 
+    # Every column, in sheet order — listing them by hand is what dropped Owned,
+    # Read, Skip Storygraph, Last Enriched and Selector Decision on every run.
     output_all = best_per_book.loc[:, [
-        "Image", "Title", "Author", "Confidence", "Needs Review",
-        "ISBN_10", "ISBN_13", "ASIN", "Lookup Source",
-        "Description", "Genre", "PageCount", "LengthCategory", "AgeRange", "Tropes", "Triggers",
-        "Metadata Enriched",
-        "StoryGraph Status", "StoryGraph Matched Query", "StoryGraph Notes", "StoryGraph Completed",
-        "DuplicateKey"
+        c for c in sheet_order if c in best_per_book.columns
     ]]
 
     output_review = review_only.loc[:, [
-        "Image", "Title", "Author", "Confidence", "Needs Review",
-        "ISBN_10", "ISBN_13", "ASIN", "Lookup Source",
-        "Description", "Genre", "PageCount", "LengthCategory", "AgeRange", "Tropes", "Triggers",
-        "Metadata Enriched",
-        "StoryGraph Status", "StoryGraph Matched Query", "StoryGraph Notes", "StoryGraph Completed",
-        "DuplicateKey"
+        c for c in sheet_order if c in review_only.columns
     ]]
 
     output_duplicates = duplicate_summary.loc[:, [
