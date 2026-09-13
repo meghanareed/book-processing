@@ -126,6 +126,18 @@ EXTERNAL_COLUMNS = [
 # Full column order for the All Books sheet.
 SHEET_COLUMNS = ALL_BOOKS_COLUMNS + EXTERNAL_COLUMNS
 
+
+def is_junk_column(name) -> bool:
+    """True for a column with no real header.
+
+    pandas names a headerless column "Unnamed: 7".  Those are the debris of
+    writes that landed past the end of the sheet — apply_reading_log.py used to
+    put "Yes" in column 25 whether or not anything was there — and preserving
+    unknown columns by name would otherwise keep them forever.
+    """
+    text = str(name).strip()
+    return not text or text.lower().startswith("unnamed:")
+
 # =========================
 # ENRICHMENT SKIP CONFIG
 # =========================
@@ -1048,7 +1060,8 @@ def ensure_all_books_columns(df: pd.DataFrame) -> pd.DataFrame:
     # Anything the other tools added that this script has never heard of rides
     # along at the end rather than being dropped on the floor.
     extras = [c for c in df.columns
-              if c not in SHEET_COLUMNS and not str(c).startswith("_")]
+              if c not in SHEET_COLUMNS and not str(c).startswith("_")
+              and not is_junk_column(c)]
     return df[SHEET_COLUMNS + extras]
 
 
@@ -1068,7 +1081,8 @@ def carry_book_state(df: pd.DataFrame) -> pd.DataFrame:
     """
     # Columns another tool added are per-book too, so they travel the same way.
     unknown = [c for c in df.columns
-               if c not in SHEET_COLUMNS and not str(c).startswith("_")]
+               if c not in SHEET_COLUMNS and not str(c).startswith("_")
+               and not is_junk_column(c)]
     present = [c for c in PER_BOOK_STATE + unknown if c in df.columns]
     if not present or "DuplicateKey" not in df.columns:
         return df
@@ -1277,6 +1291,7 @@ def build_excel_from_progress() -> None:
     sheet_order = SHEET_COLUMNS + [
         c for c in best_per_book.columns
         if c not in SHEET_COLUMNS and not str(c).startswith("_")
+        and not is_junk_column(c)
     ]
 
     output_unique = df_unique.loc[:, [
