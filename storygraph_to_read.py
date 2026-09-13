@@ -281,6 +281,12 @@ def needs_removal(row: pd.Series) -> bool:
 def should_skip_storygraph(row: pd.Series) -> bool:
     if clean_text(row.get(SKIP_COL)).lower() == "yes":
         return True
+    # Owned now means "in the Amazon library" rather than "in the library and
+    # unread", so finished books reach this filter and have to be turned away
+    # here.  Taking a book off the pile is still worth doing once it is read,
+    # which is why a pending removal comes through regardless.
+    if clean_text(row.get(READ_COL)).lower() == "yes" and not needs_removal(row):
+        return True
     decision = clean_text(row.get(DECISION_COL))
     if not decision:
         return False
@@ -290,7 +296,7 @@ def should_skip_storygraph(row: pd.Series) -> bool:
 
 
 def is_owned(row: pd.Series) -> bool:
-    """Return True if this book came from Amazon (Owned = Yes)."""
+    """Return True if this book is in the Amazon library (Owned = Yes)."""
     return clean_text(row.get(OWNED_COL)).lower() == "yes"
 
 
@@ -1208,7 +1214,9 @@ def main():
     df = df[~df.apply(should_skip_storygraph, axis=1)].copy()
     df = df[~df.apply(is_terminal_status, axis=1)].copy()
 
-    # Only process books that came from Amazon (Owned = Yes)
+    # Only books in the Amazon library (Owned = Yes).  Read ones were already
+    # dropped by should_skip_storygraph above, so what is left is the pile
+    # actually waiting to be added.
     if OWNED_COL in df.columns:
         owned = df[OWNED_COL].apply(clean_text).str.lower() == "yes"
         # A removal is about your To-Read pile, not about owning the book, so

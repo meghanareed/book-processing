@@ -72,20 +72,41 @@ at the start of every run; the full history is in `logs\` in the data folder.
 7. Pick the JSON file you just downloaded
 
 The apply script will:
-- Set column Y (Read) to "Yes" in books_output.xlsx for each decision
+- Set the "Read" column to "Yes" in books_output.xlsx for each decision
 - Append rows to my-reading-log.xlsx
+
+### What "Owned" means
+
+`Owned = Yes` means **the book is in your Amazon library**, whether or not you have
+read it. `Read = Yes` is what separates the library from the pile still to read.
+
+It used to mean "in the library *and* unread" — the Amazon scraper only set it on
+books without the READ badge — which made the owned count impossible to compare
+against the unread count in the Kindle app. Anything that wants the to-read pile
+now asks for `Owned = Yes AND Read ≠ Yes`.
+
+One gap worth knowing about: a book you have already read that was never in the
+spreadsheet is left out rather than added. It would cost an OpenAI enrichment call
+for a book nothing downstream will ever offer you. So `Owned = Yes` counts your
+library minus read books you never tracked.
 
 ### Push to StoryGraph
 
-The StoryGraph script adds your owned books to your StoryGraph To-Read pile and marks them as owned. Before opening the browser, it skips any book that matches any of these conditions:
+The StoryGraph script adds your unread owned books to your StoryGraph To-Read pile
+and marks them as owned. Before opening the browser, it skips any book that matches
+any of these conditions:
 
 | Column | Value | Why skipped |
 |--------|-------|-------------|
 | `Read` | Yes | Already read — no point adding to To-Read |
 | `Skip Storygraph` | Yes | Manually excluded |
+| `Selector Decision` | Read or Ignored | Dismissed in the selector |
 | `StoryGraph Status` | Added or Skipped | Already processed in a previous run |
 | `StoryGraph Completed` | Yes | Already processed in a previous run |
-| `Owned` | anything other than Yes | Only owned books are pushed to StoryGraph |
+| `Owned` | anything other than Yes | Not in your Amazon library |
+
+A book marked `Removed` in the selector comes through regardless of `Read` and
+`Owned` — taking it off your To-Read pile is still a job worth doing.
 
 If StoryGraph shows a book as already **Read** (even if your Excel didn't know), the script sets `Read = Yes` in Excel automatically and skips adding it to To-Read.
 
@@ -122,7 +143,7 @@ The selector exports JSON like this:
 
 **Playwright errors**: The first time you run Amazon/StoryGraph tools, Playwright will download Chromium. This can take a few minutes.
 
-**Book showing in StoryGraph run even though it's read**: Make sure `Read = Yes` is set in column Y of books_output.xlsx. The script filters these out before opening the browser. If StoryGraph itself shows the book as Read but your Excel doesn't, the script will detect it and set `Read = Yes` automatically for next time.
+**Book showing in StoryGraph run even though it's read**: Make sure `Read = Yes` is set in the "Read" column of books_output.xlsx. The script filters these out before opening the browser. If StoryGraph itself shows the book as Read but your Excel doesn't, the script will detect it and set `Read = Yes` automatically for next time.
 
 ## Next Steps
 
