@@ -116,12 +116,28 @@ def extract_books(page) -> list[tuple[str, str]]:
     return [(clean_text(r.get("title")), clean_text(r.get("author"))) for r in rows]
 
 
-# Counts whatever the shelf renders — pane containers if present, book links
-# otherwise — so growth can be detected without knowing the exact markup.
-COUNT_BOOKS_JS = """() => Math.max(
-    document.querySelectorAll('.book-pane').length,
-    document.querySelectorAll('a[href*="/books/"]').length
-)"""
+# Counts exactly what EXTRACT_BOOKS_JS will return: distinct /books/<uuid>
+# links carrying visible text.  It used to count every 'a[href*="/books/"]',
+# which is six links per book — cover, title, editions, similar and so on — so
+# a finished 469 book shelf logged "2814 book(s) loaded" and looked like a
+# runaway.  Two runs were killed seconds from completion because of it.  The
+# progress number and the extraction must agree or the log cannot be trusted.
+_COUNT_BOOKS_BODY = r"""
+  const seen = new Set();
+  document.querySelectorAll('a[href*="/books/"]').forEach(a => {
+    const href = (a.getAttribute('href') || '').split('?')[0].replace(/\/$/, '');
+    if (!/^\/books\/[0-9a-f-]{36}$/i.test(href)) return;
+    if (!(a.innerText || '').trim()) return;   // cover link wraps an image
+    seen.add(href);
+  });
+  return seen.size;
+"""
+
+COUNT_BOOKS_JS = "() => {" + _COUNT_BOOKS_BODY + "}"
+
+# Same count, asked as "has it grown?" for wait_for_function.  Derived from the
+# one body on purpose: an inline copy is how the two drifted apart before.
+_GREW_JS = "prev => (" + COUNT_BOOKS_JS + ")() > prev"
 
 
 def scroll_until_loaded(page) -> int:
@@ -140,10 +156,7 @@ def scroll_until_loaded(page) -> int:
         page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
         try:
             page.wait_for_function(
-                "prev => Math.max("
-                "  document.querySelectorAll('.book-pane').length,"
-                "  document.querySelectorAll('a[href*=\"/books/\"]').length"
-                ") > prev",
+                _GREW_JS,
                 arg=loaded,
                 timeout=SCROLL_WAIT_MS,
             )
