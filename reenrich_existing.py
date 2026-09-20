@@ -673,6 +673,12 @@ def _run(args, missing_field: str | None) -> None:
     skipped   = 0
     errors    = 0
     vague_author_rows: list[str] = []
+    lookup_errors     = 0
+    consecutive_errors = 0
+    # A quota block fails every row identically. Without a circuit breaker the
+    # run keeps going for hours, learns nothing, and stamps each row on the way
+    # past so none of them are retried for six months.
+    ERROR_ABORT_STREAK = 25
     save_interval = 10  # save every N updates so a crash loses minimal progress
 
     for idx in eligible_indices:
@@ -716,9 +722,33 @@ def _run(args, missing_field: str | None) -> None:
                         result["PageCount"] = float(amz_pages)
                         log(f"  [AMAZON] Found PageCount={amz_pages} via ASIN")
 
+            lookup_failed = bool(clean_text(result.get("Lookup Error", "")))
+            if lookup_failed:
+                lookup_errors += 1
+                consecutive_errors += 1
+                log(f"  [LOOKUP FAILED] {result['Lookup Error']}")
+            else:
+                consecutive_errors = 0
+
             new_row, changed = apply_result(row, result)
 
-            if changed:
+            if lookup_failed:
+                # Do not stamp Last Enriched. The row was never actually looked
+                # up, so hiding it behind the freshness rule would be recording
+                # a result we never got.
+                if changed:
+                    for col in changed:
+                        if col != "Last Enriched":
+                            df.at[idx, col] = new_row[col]
+                skipped += 1
+                if consecutive_errors >= ERROR_ABORT_STREAK:
+                    log("")
+                    log(f"ABORTING: {consecutive_errors} lookups failed in a row.")
+                    log(f"  Last error: {result['Lookup Error']}")
+                    log("  Nothing has been date-stamped, so re-running once the")
+                    log("  cause is cleared will pick these rows up again.")
+                    break
+            elif changed:
                 # Assign column-by-column to avoid pandas dtype conflicts
                 # (assigning a whole Series with df.loc[idx] = new_row forces
                 # pandas to reconcile mixed types and crashes on float64 columns
@@ -774,6 +804,10 @@ def _run(args, missing_field: str | None) -> None:
     log(f"Updated   : {updated}")
     log(f"No change : {skipped}")
     log(f"Errors    : {errors}")
+    if lookup_errors:
+        log("")
+        log(f"Lookups failed : {lookup_errors} — these rows were NOT date-stamped")
+        log("                 and stay eligible for a later run.")
     if vague_author_rows:
         log("")
         log(f"No author : {len(vague_author_rows)} — identifiers only, no AI-derived")

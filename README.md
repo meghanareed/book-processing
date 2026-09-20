@@ -185,6 +185,33 @@ The selector exports JSON like this:
 
 ## Troubleshooting
 
+### Everything comes back with no Description
+
+Google Books allows a limited number of anonymous queries per day, shared across
+everyone calling it without an API key. Once that runs out every request returns
+`HTTP 429`, including one for a book as findable as *Harry Potter*.
+
+The lookups used to swallow that and return the same empty result they return
+for a book that genuinely is not there, so a quota-blocked run looked like a
+library of unknown books — and stamped `Last Enriched` on each row as it went,
+hiding thousands of them behind the freshness rule for six months despite having
+learned nothing about them.
+
+Now a failed lookup is reported as a `Lookup Error`, those rows are **not**
+date-stamped, and a run aborts after 25 consecutive failures instead of grinding
+on for hours. If you see:
+
+```
+ABORTING: 25 lookups failed in a row.
+  Last error: Google Books quota exceeded (HTTP 429)
+```
+
+wait for the quota to reset and run again — nothing was lost. The quota resets
+daily. Registering a Google Books API key raises the ceiling substantially if you
+hit it often.
+
+
+
 **"Script not found"**: Make sure all your .py files are in the same folder as the launcher.
 
 **Python errors**: Each button installs its required packages before running. If you see errors, try:

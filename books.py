@@ -828,7 +828,21 @@ def title_match(candidate_title: str, target_title: str) -> bool:
     return c == t or c in t or t in c
 
 
+def _empty_lookup() -> dict:
+    return {
+        "ISBN_10": "", "ISBN_13": "", "ASIN": "", "Lookup Source": "",
+        "Description": "", "Genre": "", "PageCount": "", "LengthCategory": "", "AgeRange": ""
+    }
+
+
 def lookup_google_books(title: str, author: str) -> dict:
+    """Look a book up on Google Books.
+
+    "Lookup Error" separates *the lookup did not work* from *there is no such
+    book*. Both used to come back as the same empty dict, which is how a day of
+    quota-blocked runs looked exactly like a library full of books Google has
+    never heard of — while every row got stamped as enriched on the way past.
+    """
     try:
         q = f'intitle:"{title}" inauthor:"{author}"' if author else f'intitle:"{title}"'
         r = requests.get(
@@ -836,6 +850,11 @@ def lookup_google_books(title: str, author: str) -> dict:
             params={"q": q, "maxResults": 5, "printType": "books"},
             timeout=LOOKUP_TIMEOUT_SECONDS
         )
+        if r.status_code == 429:
+            return {**_empty_lookup(),
+                    "Lookup Error": "Google Books quota exceeded (HTTP 429)"}
+        if r.status_code >= 500:
+            return {**_empty_lookup(), "Lookup Error": f"Google Books HTTP {r.status_code}"}
         r.raise_for_status()
         data = r.json()
 
@@ -880,13 +899,15 @@ def lookup_google_books(title: str, author: str) -> dict:
                     "LengthCategory": page_count_to_length_category(page_count),
                     "AgeRange": "Adult" if maturity == "MATURE" else "",
                 }
+    except requests.RequestException as e:
+        # A timeout or dropped connection says nothing about the book.
+        return {**_empty_lookup(),
+                "Lookup Error": f"Google Books unreachable: {type(e).__name__}"}
     except Exception:
         pass
 
-    return {
-        "ISBN_10": "", "ISBN_13": "", "ASIN": "", "Lookup Source": "",
-        "Description": "", "Genre": "", "PageCount": "", "LengthCategory": "", "AgeRange": ""
-    }
+    # Genuinely searched, genuinely nothing there.
+    return _empty_lookup()
 
 
 def lookup_open_library(title: str, author: str) -> dict:
@@ -926,13 +947,13 @@ def lookup_open_library(title: str, author: str) -> dict:
                     "LengthCategory": page_count_to_length_category(page_count),
                     "AgeRange": "",
                 }
+    except requests.RequestException as e:
+        return {**_empty_lookup(),
+                "Lookup Error": f"Open Library unreachable: {type(e).__name__}"}
     except Exception:
         pass
 
-    return {
-        "ISBN_10": "", "ISBN_13": "", "ASIN": "", "Lookup Source": "",
-        "Description": "", "Genre": "", "PageCount": "", "LengthCategory": "", "AgeRange": ""
-    }
+    return _empty_lookup()
 
 
 def lookup_amazon_asin(title: str, author: str) -> dict:
@@ -1026,6 +1047,8 @@ Rules for spice_tags specifically:
 {allowed_spice}
 - Return "" for anything that is not adult romance, or when the description
   gives you nothing to go on. A guess here is worse than a blank.
+- Return "" if no description is supplied below. A title and an author name are
+  not evidence of what happens inside a book.
 - These describe content the book actually contains, not its overall tone.
 
 Title: {title}
@@ -1056,7 +1079,12 @@ Description:
             "AgeRange": clean_text(parsed.get("age_range", "")),
             "Tropes": normalize_csv_list(parsed.get("tropes", "")),
             "Triggers": normalize_csv_list(parsed.get("triggers", "")),
-            "Spice Tags": normalize_spice_tags(parsed.get("spice_tags", "")),
+            # Enforced here as well as asked for in the prompt. A title like
+            # "Give Me More" reliably talks the model into four confident tags,
+            # and the resulting column reads exactly like one built from real
+            # descriptions — there is no way to tell them apart afterwards.
+            "Spice Tags": (normalize_spice_tags(parsed.get("spice_tags", ""))
+                           if clean_text(description) else ""),
         }
     except Exception:
         return {
@@ -1089,17 +1117,22 @@ def lookup_book_metadata(title: str, author: str, need_fields=None,
     result = {
         "ISBN_10": "", "ISBN_13": "", "ASIN": "", "Lookup Source": "",
         "Description": "", "Genre": "", "PageCount": "", "LengthCategory": "", "AgeRange": "",
-        "Tropes": "", "Triggers": "", "Spice Tags": ""
+        "Tropes": "", "Triggers": "", "Spice Tags": "", "Lookup Error": ""
     }
 
     google_result = lookup_google_books(title, author)
+    if google_result.get("Lookup Error"):
+        result["Lookup Error"] = google_result["Lookup Error"]
     if any(clean_text(google_result.get(k)) for k in ["ISBN_10", "ISBN_13", "Description", "Genre", "PageCount", "AgeRange"]):
         result.update(google_result)
 
     if not clean_text(result["ISBN_10"]) and not clean_text(result["ISBN_13"]) and not clean_text(result["Description"]) and not clean_text(result["Genre"]):
         time.sleep(LOOKUP_SLEEP_SECONDS)
         openlib_result = lookup_open_library(title, author)
-        result.update({k: v for k, v in openlib_result.items() if clean_text(v)})
+        if openlib_result.get("Lookup Error") and not result["Lookup Error"]:
+            result["Lookup Error"] = openlib_result["Lookup Error"]
+        result.update({k: v for k, v in openlib_result.items()
+                       if clean_text(v) and k != "Lookup Error"})
 
     if clean_text(known_asin):
         result["ASIN"] = clean_text(known_asin)
@@ -1118,7 +1151,10 @@ def lookup_book_metadata(title: str, author: str, need_fields=None,
     # describing a different book entirely, and "Metadata Enriched" then stops
     # the row ever being looked at again.  Empty is recoverable; wrong is not.
     # Add the author and the next run fills these in properly.
-    if is_vague_author(author):
+    if clean_text(result["Lookup Error"]) and not clean_text(result.get("Description")):
+        print(f"    [SKIP AI] {result['Lookup Error']} — no description for "
+              f"{clean_text(title)!r}, leaving derived fields empty", flush=True)
+    elif is_vague_author(author):
         print(f"    [SKIP AI] No author for {clean_text(title)!r} — "
               f"leaving Genre/Tropes/Triggers/Spice Tags empty", flush=True)
     elif need_fields is None or any(f in need_fields for f in AI_FILLABLE_FIELDS):
