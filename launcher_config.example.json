@@ -3,6 +3,8 @@
 
   "books_py": {
     "openai_api_key": "sk-REPLACE-ME",
+    "_google_comment": "Optional but strongly recommended. Without it Google Books lookups share a small anonymous daily quota with every other unauthenticated caller; once it is gone every lookup returns HTTP 429 and no descriptions come back at all. Free from console.cloud.google.com - enable the Books API and create an API key. GOOGLE_BOOKS_API_KEY in the environment overrides this.",
+    "google_api_key": "",
     "model": "gpt-4o-mini",
     "max_workers": 4,
     "confidence_threshold": 0.75,

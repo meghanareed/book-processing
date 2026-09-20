@@ -206,9 +206,27 @@ ABORTING: 25 lookups failed in a row.
   Last error: Google Books quota exceeded (HTTP 429)
 ```
 
-wait for the quota to reset and run again — nothing was lost. The quota resets
-daily. Registering a Google Books API key raises the ceiling substantially if you
-hit it often.
+wait for the quota to reset and run again — nothing was lost.
+
+**Get your own key.** It is free and it is the difference between a few hundred
+lookups a day shared with the whole internet and a quota you are not competing
+for:
+
+1. Go to <https://console.cloud.google.com/> and create a project
+2. Enable **Books API** under APIs & Services → Library
+3. APIs & Services → Credentials → Create credentials → API key
+4. Paste it into Settings → Books → *Google Books API Key*, or set
+   `books_py.google_api_key` in `launcher_config.json`
+
+`GOOGLE_BOOKS_API_KEY` in the environment overrides the config file, so the key
+need not be written to disk at all. A key that is rejected reports itself as
+`Google Books rejected the API key` rather than looking like a library of books
+nobody has heard of.
+
+Worth knowing even with a key: indie romance is thinly covered on Google Books.
+Several titles sampled from this library return genuinely no results, quota or
+no quota. For those, the Amazon page-count lookup via a known ASIN is the more
+productive source.
 
 
 

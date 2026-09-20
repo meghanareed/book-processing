@@ -78,6 +78,10 @@ APPLY_SCRIPT = "apply_reading_log.py"
 DEFAULT_CONFIG = {
     "books_py": {
         "openai_api_key": "",
+        # Optional. Without one, Google Books lookups share a small anonymous
+        # daily quota with every other unauthenticated caller and start
+        # answering HTTP 429 for every book once it runs out.
+        "google_api_key": "",
         "model": "gpt-4o-mini",
         "max_workers": 4,
         "confidence_threshold": 0.75,
@@ -730,6 +734,19 @@ class SettingsDialog(tk.Toplevel):
                 row=row, column=2, sticky="w", padx=5, pady=(5, 0))
             ttk.Label(parent, text=hint, font=("", 8), foreground="gray").grid(
                 row=row + 1, column=1, sticky="w")
+
+        ttk.Separator(parent, orient="horizontal").grid(
+            row=24, column=0, columnspan=3, sticky="ew", pady=(12, 6))
+        ttk.Label(parent, text="Google Books API Key (optional):",
+                  font=("", 9, "bold")).grid(row=25, column=0, sticky="w", pady=5)
+        self.books_vars["google_api_key"] = tk.StringVar(
+            value=self.config.get("books_py", {}).get("google_api_key", ""))
+        ttk.Entry(parent, textvariable=self.books_vars["google_api_key"],
+                  width=50, show="*").grid(row=25, column=1, sticky="ew", pady=5)
+        ttk.Label(parent,
+                  text="Blank = shared anonymous quota, which runs out quickly and then "
+                       "returns nothing for every book.",
+                  font=("", 8), foreground="gray").grid(row=26, column=1, sticky="w")
 
         parent.columnconfigure(1, weight=1)
     

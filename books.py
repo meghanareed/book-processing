@@ -89,6 +89,15 @@ RETRY_MAX_ATTEMPTS = int(_BOOKS_CFG.get("retry_max_attempts") or 6)
 RETRY_BASE_SECONDS = float(_BOOKS_CFG.get("retry_base_seconds") or 5.0)
 RETRY_MAX_SLEEP = float(_BOOKS_CFG.get("retry_max_sleep") or 60.0)
 
+# Google Books allows a small number of anonymous queries per day, shared with
+# every other unauthenticated caller, and answers HTTP 429 once it runs out —
+# for every book, however findable. A free key of your own raises that ceiling
+# by orders of magnitude. Set books_py.google_api_key in launcher_config.json,
+# or GOOGLE_BOOKS_API_KEY in the environment, which wins so the key need not sit
+# in a file at all.
+GOOGLE_BOOKS_API_KEY = (os.environ.get("GOOGLE_BOOKS_API_KEY")
+                        or _BOOKS_CFG.get("google_api_key") or "").strip()
+
 LOOKUP_TIMEOUT_SECONDS = 20
 LOOKUP_SLEEP_SECONDS = 0.2
 AMAZON_LOOKUP_SLEEP_SECONDS = 0.8
@@ -845,14 +854,29 @@ def lookup_google_books(title: str, author: str) -> dict:
     """
     try:
         q = f'intitle:"{title}" inauthor:"{author}"' if author else f'intitle:"{title}"'
+        params = {"q": q, "maxResults": 5, "printType": "books"}
+        if GOOGLE_BOOKS_API_KEY:
+            params["key"] = GOOGLE_BOOKS_API_KEY
         r = requests.get(
             "https://www.googleapis.com/books/v1/volumes",
-            params={"q": q, "maxResults": 5, "printType": "books"},
+            params=params,
             timeout=LOOKUP_TIMEOUT_SECONDS
         )
         if r.status_code == 429:
+            # Which quota ran out is the difference between "wait until
+            # tomorrow" and "you are sharing one with the entire internet".
+            which = ("your Google Books API key's quota" if GOOGLE_BOOKS_API_KEY
+                     else "the shared anonymous Google Books quota — set "
+                          "books_py.google_api_key for your own")
             return {**_empty_lookup(),
-                    "Lookup Error": "Google Books quota exceeded (HTTP 429)"}
+                    "Lookup Error": f"Quota exceeded (HTTP 429): {which}"}
+        if r.status_code in (400, 403):
+            # A rejected key is not a missing book either, and it fails on every
+            # row identically, so say so rather than returning a quiet blank.
+            if GOOGLE_BOOKS_API_KEY:
+                return {**_empty_lookup(),
+                        "Lookup Error": f"Google Books rejected the API key (HTTP {r.status_code})"}
+            return {**_empty_lookup(), "Lookup Error": f"Google Books HTTP {r.status_code}"}
         if r.status_code >= 500:
             return {**_empty_lookup(), "Lookup Error": f"Google Books HTTP {r.status_code}"}
         r.raise_for_status()
