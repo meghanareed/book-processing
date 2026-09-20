@@ -279,6 +279,16 @@ def normalize_spice_tags(value: str) -> str:
     return ", ".join(out)
 
 
+def is_vague_author(author: str) -> str:
+    """True when a row names no author we can search on.
+
+    A title-only search is a guess.  "LILAC" or "Living Legend" will match
+    *something* on Google Books, and nothing downstream can tell that match
+    apart from a real one.
+    """
+    return clean_text(author).lower() in ("", "nan", "unknown", "n/a", "none")
+
+
 def build_duplicate_key(title: str, author: str) -> str:
     return f"{normalize_text(title)}|{normalize_text(author)}"
 
@@ -1101,7 +1111,17 @@ def lookup_book_metadata(title: str, author: str, need_fields=None,
             if not clean_text(result["Lookup Source"]):
                 result["Lookup Source"] = asin_result.get("Lookup Source", "")
 
-    if need_fields is None or any(f in need_fields for f in AI_FILLABLE_FIELDS):
+    # A row with no author gets identifiers and page counts but no derived
+    # text.  The model reads whatever description the title-only search landed
+    # on, so when that search picked the wrong book it does not return nothing —
+    # it returns a confident, plausible Genre/Tropes/Triggers/Spice Tags
+    # describing a different book entirely, and "Metadata Enriched" then stops
+    # the row ever being looked at again.  Empty is recoverable; wrong is not.
+    # Add the author and the next run fills these in properly.
+    if is_vague_author(author):
+        print(f"    [SKIP AI] No author for {clean_text(title)!r} — "
+              f"leaving Genre/Tropes/Triggers/Spice Tags empty", flush=True)
+    elif need_fields is None or any(f in need_fields for f in AI_FILLABLE_FIELDS):
         ai_result = ai_content_enrichment(
             title=title,
             author=author,

@@ -221,6 +221,7 @@ lookup_book_metadata          = books.lookup_book_metadata
 page_count_to_length_category = books.page_count_to_length_category
 normalize_csv_list            = books.normalize_csv_list
 normalize_spice_tags          = getattr(books, "normalize_spice_tags", None)
+is_vague_author               = getattr(books, "is_vague_author", lambda a: not clean_text(a))
 clean_text                    = books.clean_text
 AI_ENRICH_SLEEP               = getattr(books, "AI_ENRICH_SLEEP_SECONDS", 0.3)
 
@@ -481,8 +482,11 @@ def apply_result(row: pd.Series, result: dict) -> tuple[pd.Series, list[str]]:
             if "LengthCategory" not in changed:
                 changed.append("LengthCategory")
 
-    # Stamp Last Enriched whenever any field was filled
-    if changed:
+    # Stamp Last Enriched whenever any field was filled — except for a row with
+    # no author, which is not finished, it is waiting on you. Stamping it would
+    # hide it behind the freshness rule for months, and adding the author (the
+    # one thing that would let it enrich properly) would appear to do nothing.
+    if changed and not is_vague_author(row.get("Author", "")):
         row["Last Enriched"] = datetime.date.today().isoformat()
         if "Last Enriched" not in changed:
             changed.append("Last Enriched")
@@ -668,6 +672,7 @@ def _run(args, missing_field: str | None) -> None:
     updated   = 0
     skipped   = 0
     errors    = 0
+    vague_author_rows: list[str] = []
     save_interval = 10  # save every N updates so a crash loses minimal progress
 
     for idx in eligible_indices:
@@ -681,6 +686,10 @@ def _run(args, missing_field: str | None) -> None:
 
         missing_now = [f for f in FILLABLE_FIELDS if needs_work(row, f)]
         log(f"  Missing: {', '.join(missing_now) or 'nothing?'}")
+        if is_vague_author(author):
+            log("  No author — identifiers only, no AI-derived fields. "
+                "Add an author and re-run to fill them.")
+            vague_author_rows.append(title)
 
         if args.dry_run:
             log("  [DRY RUN] Would call lookup_book_metadata -- skipping.")
@@ -729,9 +738,15 @@ def _run(args, missing_field: str | None) -> None:
             else:
                 # Nothing new found — stamp date so this row is skipped for
                 # the next min_age_days days rather than retried pointlessly.
-                df.at[idx, "Last Enriched"] = datetime.date.today().isoformat()
-                skipped += 1
-                log(f"  -- No new data found (date stamped, will skip for {args.min_age_days}d)")
+                # A row with no author is the exception: it stays eligible so
+                # that filling the Author column is enough to get it enriched.
+                if is_vague_author(author):
+                    skipped += 1
+                    log("  -- No new data found (no author — left eligible for re-run)")
+                else:
+                    df.at[idx, "Last Enriched"] = datetime.date.today().isoformat()
+                    skipped += 1
+                    log(f"  -- No new data found (date stamped, will skip for {args.min_age_days}d)")
 
             rows_touched = updated + skipped
             if rows_touched > 0 and rows_touched % save_interval == 0:
@@ -759,6 +774,14 @@ def _run(args, missing_field: str | None) -> None:
     log(f"Updated   : {updated}")
     log(f"No change : {skipped}")
     log(f"Errors    : {errors}")
+    if vague_author_rows:
+        log("")
+        log(f"No author : {len(vague_author_rows)} — identifiers only, no AI-derived")
+        log("            fields. Fill the Author column for these and re-run:")
+        for t in vague_author_rows[:20]:
+            log(f"              - {t}")
+        if len(vague_author_rows) > 20:
+            log(f"              ... and {len(vague_author_rows) - 20} more")
     if not args.dry_run:
         log(f"Log file  : {LOG_PATH}")
     log("=" * 60)

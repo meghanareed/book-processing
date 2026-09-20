@@ -105,6 +105,23 @@ to reach every row, which costs one model call each.
 would drop every existing row below the completeness threshold and turn the next
 ordinary run into a full re-enrichment of the whole sheet.
 
+### Rows with no author
+
+A row whose Author column is blank or "Unknown" gets identifiers, page count and
+length category, but no AI-derived fields — no Genre, AgeRange, Tropes, Triggers
+or Spice Tags.
+
+With no author to search on, the lookup is a title-only guess, and titles like
+"Living Legend" or "LILAC" will match *something*. When that match is the wrong
+book the model does not return nothing; it reads the wrong description and
+returns confident, plausible metadata describing a different book. Empty cells
+are recoverable, and obviously so. Wrong ones are neither.
+
+These rows are also left without a `Last Enriched` stamp, so they stay eligible
+rather than disappearing behind the freshness rule for six months. Fill in the
+Author column and the next run enriches them normally. `reenrich_existing.py`
+lists them at the end of each run.
+
 The selector treats this column as private: it is read into browser storage on the
 device you upload the spreadsheet to, and stripped out of the file the app's
 "Save Updated App" button produces. See the selector's own README.
