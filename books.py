@@ -422,9 +422,27 @@ def is_enriched_enough(row) -> bool:
 
 
 def append_progress(rows: list[dict]) -> None:
+    """Append rows to the progress CSV, migrating the file if its columns changed.
+
+    A plain append assumes the new rows' columns match the file's existing
+    header.  When a column gets added (e.g. Spice Tags), that silently writes
+    rows with more fields than the header — which pandas' C parser can't read
+    back at all, and its skip-bad-lines recovery mode drops wholesale.  Rewrite
+    the existing rows onto the union of columns first so the header always
+    matches what's actually in every row.
+    """
     if not rows:
         return
     df = pd.DataFrame(rows)
+
+    if PROGRESS_CSV.exists():
+        existing_header = pd.read_csv(PROGRESS_CSV, nrows=0).columns.tolist()
+        if list(df.columns) != existing_header:
+            union_columns = existing_header + [c for c in df.columns if c not in existing_header]
+            existing = pd.read_csv(PROGRESS_CSV, dtype=str, keep_default_na=False)
+            existing.reindex(columns=union_columns, fill_value="").to_csv(PROGRESS_CSV, index=False)
+            df = df.reindex(columns=union_columns, fill_value="")
+
     write_header = not PROGRESS_CSV.exists()
     df.to_csv(PROGRESS_CSV, mode="a", index=False, header=write_header)
 
