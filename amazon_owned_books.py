@@ -202,6 +202,7 @@ def _books_fn(name):
 
 lookup_book_metadata    = _books_fn("lookup_book_metadata")
 normalize_csv_list      = _books_fn("normalize_csv_list")
+normalize_spice_tags    = _books_fn("normalize_spice_tags")
 page_count_to_length    = _books_fn("page_count_to_length_category")
 is_enriched_enough      = _books_fn("is_enriched_enough")
 AI_ENRICH_SLEEP         = getattr(books_mod, "AI_ENRICH_SLEEP_SECONDS", 0.2) if books_mod else 0.2
@@ -315,6 +316,7 @@ def enrich_row(row: dict) -> dict:
     for field in [
         "ISBN_10", "ISBN_13", "ASIN", "Lookup Source", "Description",
         "Genre", "PageCount", "LengthCategory", "AgeRange", "Tropes", "Triggers",
+        "Spice Tags",
     ]:
         current = clean(row.get(field))
         new_val = clean(result.get(field))
@@ -325,6 +327,8 @@ def enrich_row(row: dict) -> dict:
     if normalize_csv_list:
         for f in ("Genre", "Tropes", "Triggers"):
             row[f] = normalize_csv_list(clean(row.get(f)))
+    if normalize_spice_tags:
+        row["Spice Tags"] = normalize_spice_tags(clean(row.get("Spice Tags")))
 
     # Derive length category if still missing
     if not clean(row.get("LengthCategory")) and page_count_to_length:

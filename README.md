@@ -75,6 +75,40 @@ The apply script will:
 - Set the "Read" column to "Yes" in books_output.xlsx for each decision
 - Append rows to my-reading-log.xlsx
 
+### The Spice Tags column
+
+`Spice Tags` is a per-book list of fine-grained content descriptors, filled by the
+same enrichment call that writes Genre, Tropes and Triggers. Some of its entries
+overlap with Triggers on purpose — the same detail can be something you seek out
+or something you steer around, and which one it is depends on the reader, not the
+book.
+
+Unlike the other list columns it is a **closed vocabulary**: `SPICE_TAGS` in
+`books.py` is the whole set of values the column is allowed to hold. The model is
+given that list and told to copy from it verbatim, and `normalize_spice_tags()`
+throws away anything else it returns. That is deliberate — the selector matches
+these as whole tokens so its filters can be specific, which only works if writer
+and reader agree on the exact spellings. Letting free text accumulate here is how
+the older `Tropes` column ended up full of content warnings instead of tropes.
+
+To fill the column on a sheet that predates it:
+
+```bash
+python reenrich_existing.py --missing "Spice Tags"
+```
+
+The column is added automatically on the first run. Note that the usual skip rules
+still apply, so this only reaches rows that are otherwise incomplete; add `--force`
+to reach every row, which costs one model call each.
+
+`Spice Tags` is intentionally **not** in `ENRICHMENT_SCORED_FIELDS`. Adding it there
+would drop every existing row below the completeness threshold and turn the next
+ordinary run into a full re-enrichment of the whole sheet.
+
+The selector treats this column as private: it is read into browser storage on the
+device you upload the spreadsheet to, and stripped out of the file the app's
+"Save Updated App" button produces. See the selector's own README.
+
 ### What "Owned" means
 
 `Owned = Yes` means **the book is in your Amazon library**, whether or not you have

@@ -97,7 +97,7 @@ AI_ENRICH_SLEEP_SECONDS = 0.2
 TEXT_COLUMNS = [
     "Image", "Title", "Author", "Needs Review",
     "ISBN_10", "ISBN_13", "ASIN", "Lookup Source",
-    "Description", "Genre", "AgeRange", "Tropes", "Triggers",
+    "Description", "Genre", "AgeRange", "Tropes", "Triggers", "Spice Tags",
     "Metadata Enriched",
     "StoryGraph Status", "StoryGraph Matched Query", "StoryGraph Notes", "StoryGraph Completed",
     "DuplicateKey", "Last Enriched", "Selector Decision"
@@ -106,7 +106,7 @@ TEXT_COLUMNS = [
 ALL_BOOKS_COLUMNS = [
     "Image", "Title", "Author", "Confidence", "Needs Review",
     "ISBN_10", "ISBN_13", "ASIN", "Lookup Source",
-    "Description", "Genre", "PageCount", "LengthCategory", "AgeRange", "Tropes", "Triggers",
+    "Description", "Genre", "PageCount", "LengthCategory", "AgeRange", "Tropes", "Triggers", "Spice Tags",
     "Metadata Enriched",
     "StoryGraph Status", "StoryGraph Matched Query", "StoryGraph Notes", "StoryGraph Completed",
     "DuplicateKey", "Last Enriched", "Selector Decision"
@@ -209,6 +209,73 @@ def normalize_csv_list(value: str) -> str:
         if key not in seen:
             seen.add(key)
             out.append(part)
+    return ", ".join(out)
+
+
+# =========================
+# SPICE TAGS
+# =========================
+# A closed vocabulary, unlike Genre/Tropes/Triggers which are free text.  The
+# selector app matches these as exact tokens so its chips can be granular
+# without "Praise Kink" also answering to "Praise" — which means the model is
+# only ever allowed to pick from this list, and normalize_spice_tags below
+# throws away anything it invents anyway.
+#
+# The app carries its own copy of this list (const SPICE in
+# my-book-selector.html).  Change one, change both.
+SPICE_TAGS = [
+    # Power dynamic
+    "Dom/sub", "Soft Dom", "Service Dom", "Brat Taming", "Power Exchange",
+    "Switch Dynamic", "Master/Servant", "Sadism/Masochism",
+    # Praise and humiliation
+    "Praise Kink", "Degradation", "Humiliation", "Begging",
+    "Orgasm Denial", "Edging", "Overstimulation",
+    # Physical and sensation
+    "Bondage/Restraint", "Impact Play", "Breath Play", "Marking/Biting",
+    "Hair Pulling", "Knife Play", "Blood Play", "Temperature Play",
+    "Sensory Deprivation", "Toys",
+    # Consent and pursuit  (these overlap with Triggers by design)
+    "Dubcon", "Noncon", "Coercion", "Primal Play", "Captivity", "Somnophilia",
+    # Relational structure
+    "Reverse Harem", "Menage", "Sharing", "Voyeurism", "Exhibitionism",
+    "Cuckolding",
+    # Possession and obsession
+    "Possessiveness", "Obsession", "Stalking", "Ownership/Collaring",
+    "Jealousy", "Touch Starved", "Codependency",
+    # Fantasy and paranormal
+    "Knotting", "Size Difference", "Monster Romance", "Tentacles",
+    "Heat/Rut Cycle", "Mating Bond", "Shifter Claiming", "Blood Drinking",
+    "Breeding Kink", "Omegaverse",
+    # Situational
+    "Public Sex", "Mirror Scene", "Shower/Bath Scene", "Roleplay",
+    "Uniform/Costume", "Aftercare", "First Time", "Age Gap Dynamic",
+    "Teacher/Student", "Caretaking",
+]
+
+# Lowercased tag -> canonical spelling, so the model's "praise kink" and
+# "Praise kink" both land on "Praise Kink".
+_SPICE_CANON = {t.lower(): t for t in SPICE_TAGS}
+
+
+def normalize_spice_tags(value: str) -> str:
+    """Snap a comma-separated list to the SPICE_TAGS vocabulary.
+
+    Anything not in the list is dropped rather than passed through.  A tag the
+    app has no chip for is a tag no one can ever filter on, and letting the
+    model's improvisations accumulate in the column is how Tropes ended up full
+    of content warnings.
+    """
+    text = clean_text(value)
+    if not text:
+        return ""
+    out = []
+    seen = set()
+    for part in re.split(r"[;,|]+", text):
+        key = part.strip().lower()
+        canon = _SPICE_CANON.get(key)
+        if canon and canon not in seen:
+            seen.add(canon)
+            out.append(canon)
     return ", ".join(out)
 
 
@@ -566,6 +633,7 @@ def process_one_file(image_path: Path) -> tuple[str, list[dict], str | None, boo
                 "StoryGraph Notes": "",
                 "StoryGraph Completed": "",
                 "Triggers": "",
+                "Spice Tags": "",
                 "Metadata Enriched": "",
                 "DuplicateKey": build_duplicate_key(title, author),
             })
@@ -891,7 +959,8 @@ def lookup_amazon_asin(title: str, author: str) -> dict:
 
 def ai_content_enrichment(title: str, author: str, description: str, genre: str, age_range: str, page_count) -> dict:
     if not ENABLE_CONTENT_ENRICHMENT:
-        return {"Genre": genre, "AgeRange": age_range, "Tropes": "", "Triggers": ""}
+        return {"Genre": genre, "AgeRange": age_range, "Tropes": "", "Triggers": "",
+                "Spice Tags": ""}
 
     schema = {
         "type": "object",
@@ -899,11 +968,14 @@ def ai_content_enrichment(title: str, author: str, description: str, genre: str,
             "genre": {"type": "string"},
             "age_range": {"type": "string"},
             "tropes": {"type": "string"},
-            "triggers": {"type": "string"}
+            "triggers": {"type": "string"},
+            "spice_tags": {"type": "string"}
         },
-        "required": ["genre", "age_range", "tropes", "triggers"],
+        "required": ["genre", "age_range", "tropes", "triggers", "spice_tags"],
         "additionalProperties": False
     }
+
+    allowed_spice = ", ".join(SPICE_TAGS)
 
     prompt = f"""
 You are enriching a book spreadsheet.
@@ -913,12 +985,20 @@ Return only JSON with:
 - age_range: one of "Children", "Middle Grade", "YA", "New Adult", "Adult", "General", or ""
 - tropes: comma-separated list of likely reading tropes
 - triggers: comma-separated list of likely content warnings/triggers, or "" if unknown
+- spice_tags: comma-separated list of specific romantic/sexual content tags
 
 Rules:
 - Be conservative. Do not invent highly specific triggers if unsupported.
 - Use the provided metadata first.
 - Keep each field concise.
 - If uncertain, return a shorter list.
+
+Rules for spice_tags specifically:
+- Choose ONLY from this exact list, copied verbatim. Anything else is discarded:
+{allowed_spice}
+- Return "" for anything that is not adult romance, or when the description
+  gives you nothing to go on. A guess here is worse than a blank.
+- These describe content the book actually contains, not its overall tone.
 
 Title: {title}
 Author: {author}
@@ -948,6 +1028,7 @@ Description:
             "AgeRange": clean_text(parsed.get("age_range", "")),
             "Tropes": normalize_csv_list(parsed.get("tropes", "")),
             "Triggers": normalize_csv_list(parsed.get("triggers", "")),
+            "Spice Tags": normalize_spice_tags(parsed.get("spice_tags", "")),
         }
     except Exception:
         return {
@@ -955,12 +1036,13 @@ Description:
             "AgeRange": clean_text(age_range),
             "Tropes": "",
             "Triggers": "",
+            "Spice Tags": "",
         }
 
 
 # The only fields ai_content_enrichment can return. A row missing nothing from
 # this list has nothing to gain from the model call.
-AI_FILLABLE_FIELDS = ("Genre", "AgeRange", "Tropes", "Triggers")
+AI_FILLABLE_FIELDS = ("Genre", "AgeRange", "Tropes", "Triggers", "Spice Tags")
 
 
 def lookup_book_metadata(title: str, author: str, need_fields=None,
@@ -979,7 +1061,7 @@ def lookup_book_metadata(title: str, author: str, need_fields=None,
     result = {
         "ISBN_10": "", "ISBN_13": "", "ASIN": "", "Lookup Source": "",
         "Description": "", "Genre": "", "PageCount": "", "LengthCategory": "", "AgeRange": "",
-        "Tropes": "", "Triggers": ""
+        "Tropes": "", "Triggers": "", "Spice Tags": ""
     }
 
     google_result = lookup_google_books(title, author)
@@ -1019,6 +1101,8 @@ def lookup_book_metadata(title: str, author: str, need_fields=None,
             result["Tropes"] = ai_result["Tropes"]
         if clean_text(ai_result.get("Triggers")):
             result["Triggers"] = ai_result["Triggers"]
+        if clean_text(ai_result.get("Spice Tags")):
+            result["Spice Tags"] = ai_result["Spice Tags"]
 
     if not clean_text(result.get("LengthCategory")) and clean_text(result.get("PageCount")):
         result["LengthCategory"] = page_count_to_length_category(result["PageCount"])
@@ -1048,6 +1132,7 @@ def ensure_all_books_columns(df: pd.DataFrame) -> pd.DataFrame:
 
     for col in ["Genre", "Tropes", "Triggers"]:
         df[col] = df[col].apply(normalize_csv_list)
+    df["Spice Tags"] = df["Spice Tags"].apply(normalize_spice_tags)
 
     df["Confidence"] = pd.to_numeric(df["Confidence"], errors="coerce").fillna(0.0)
     df["PageCount"] = df["PageCount"].apply(normalize_page_count)
@@ -1165,7 +1250,7 @@ def enrich_unique_books(df_unique: pd.DataFrame) -> pd.DataFrame:
 
     for col in [
         "ISBN_10", "ISBN_13", "ASIN", "Lookup Source", "Description", "Genre",
-        "PageCount", "LengthCategory", "AgeRange", "Tropes", "Triggers", "Metadata Enriched"
+        "PageCount", "LengthCategory", "AgeRange", "Tropes", "Triggers", "Spice Tags", "Metadata Enriched"
     ]:
         if col not in df_unique.columns:
             df_unique[col] = ""
@@ -1190,7 +1275,7 @@ def enrich_unique_books(df_unique: pd.DataFrame) -> pd.DataFrame:
 
         for field in [
             "ISBN_10", "ISBN_13", "ASIN", "Lookup Source", "Description", "Genre",
-            "PageCount", "LengthCategory", "AgeRange", "Tropes", "Triggers"
+            "PageCount", "LengthCategory", "AgeRange", "Tropes", "Triggers", "Spice Tags"
         ]:
             current_value = clean_text(df_unique.at[idx, field])
             new_value = clean_text(result.get(field))
@@ -1213,6 +1298,7 @@ def enrich_unique_books(df_unique: pd.DataFrame) -> pd.DataFrame:
     df_unique["Genre"] = df_unique["Genre"].apply(normalize_csv_list)
     df_unique["Tropes"] = df_unique["Tropes"].apply(normalize_csv_list)
     df_unique["Triggers"] = df_unique["Triggers"].apply(normalize_csv_list)
+    df_unique["Spice Tags"] = df_unique["Spice Tags"].apply(normalize_spice_tags)
     return df_unique
 
 # =========================
@@ -1262,7 +1348,7 @@ def build_excel_from_progress() -> None:
 
     unique_metadata = df_unique[[
         "DuplicateKey", "ISBN_10", "ISBN_13", "ASIN", "Lookup Source",
-        "Description", "Genre", "PageCount", "LengthCategory", "AgeRange", "Tropes", "Triggers",
+        "Description", "Genre", "PageCount", "LengthCategory", "AgeRange", "Tropes", "Triggers", "Spice Tags",
         "Metadata Enriched",
         "StoryGraph Status", "StoryGraph Matched Query", "StoryGraph Notes", "StoryGraph Completed"
     ]].copy()
@@ -1270,7 +1356,7 @@ def build_excel_from_progress() -> None:
     best_per_book = best_per_book.drop(
         columns=[
             "ISBN_10", "ISBN_13", "ASIN", "Lookup Source", "Description", "Genre",
-            "PageCount", "LengthCategory", "AgeRange", "Tropes", "Triggers",
+            "PageCount", "LengthCategory", "AgeRange", "Tropes", "Triggers", "Spice Tags",
             "Metadata Enriched",
             "StoryGraph Status", "StoryGraph Matched Query", "StoryGraph Notes", "StoryGraph Completed"
         ],
@@ -1297,7 +1383,7 @@ def build_excel_from_progress() -> None:
     output_unique = df_unique.loc[:, [
         "Title", "Author", "Confidence", "Needs Review",
         "ISBN_10", "ISBN_13", "ASIN", "Lookup Source",
-        "Description", "Genre", "PageCount", "LengthCategory", "AgeRange", "Tropes", "Triggers",
+        "Description", "Genre", "PageCount", "LengthCategory", "AgeRange", "Tropes", "Triggers", "Spice Tags",
         "Metadata Enriched",
         "StoryGraph Status", "StoryGraph Matched Query", "StoryGraph Notes", "StoryGraph Completed"
     ] + [c for c in EXTERNAL_COLUMNS if c in df_unique.columns]]
@@ -1315,7 +1401,7 @@ def build_excel_from_progress() -> None:
     output_duplicates = duplicate_summary.loc[:, [
         "Title", "Author", "Count",
         "ISBN_10", "ISBN_13", "ASIN", "Lookup Source",
-        "Genre", "PageCount", "LengthCategory", "AgeRange", "Tropes", "Triggers",
+        "Genre", "PageCount", "LengthCategory", "AgeRange", "Tropes", "Triggers", "Spice Tags",
         "Metadata Enriched",
         "StoryGraph Status", "StoryGraph Matched Query", "StoryGraph Notes", "StoryGraph Completed",
         "DuplicateKey"

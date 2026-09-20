@@ -149,7 +149,7 @@ ENRICHMENT_SCORED_FIELDS = [
 
 # Fields that this script can fill in / check for --missing
 FILLABLE_FIELDS = [
-    "PageCount", "LengthCategory", "Genre", "Tropes", "Triggers",
+    "PageCount", "LengthCategory", "Genre", "Tropes", "Triggers", "Spice Tags",
     "AgeRange", "Description", "ASIN", "ISBN_13", "ISBN_10",
 ]
 
@@ -220,6 +220,7 @@ books = _load_books_module()
 lookup_book_metadata          = books.lookup_book_metadata
 page_count_to_length_category = books.page_count_to_length_category
 normalize_csv_list            = books.normalize_csv_list
+normalize_spice_tags          = getattr(books, "normalize_spice_tags", None)
 clean_text                    = books.clean_text
 AI_ENRICH_SLEEP               = getattr(books, "AI_ENRICH_SLEEP_SECONDS", 0.3)
 
@@ -463,6 +464,10 @@ def apply_result(row: pd.Series, result: dict) -> tuple[pd.Series, list[str]]:
         # Normalise list fields before storing
         if field in ("Genre", "Tropes", "Triggers"):
             new_str = normalize_csv_list(new_str)
+        elif field == "Spice Tags" and normalize_spice_tags:
+            new_str = normalize_spice_tags(new_str)
+            if not new_str:
+                continue
         row[field] = new_str
         changed.append(field)
 
@@ -586,11 +591,20 @@ def _run(args, missing_field: str | None) -> None:
             save_excel(df)
             log("Saved column addition to file.")
 
+    # Spice Tags arrived after most sheets were written, and --missing cannot
+    # look for a column that is not there yet.
+    if "Spice Tags" not in df.columns:
+        df["Spice Tags"] = ""
+        log("Added 'Spice Tags' column to sheet.")
+        if not args.dry_run:
+            save_excel(df)
+            log("Saved column addition to file.")
+
     # Force string columns that pandas may have inferred as float64
     # (happens when a column is entirely empty/NaN on load).
     # Without this, writing a date string like '2026-06-17' crashes.
     STRING_COLS = [
-        "Last Enriched", "Description", "Genre", "Tropes", "Triggers",
+        "Last Enriched", "Description", "Genre", "Tropes", "Triggers", "Spice Tags",
         "AgeRange", "LengthCategory", "ISBN_13", "ISBN_10", "ASIN",
         "Lookup Source", "Metadata Enriched",
     ]
