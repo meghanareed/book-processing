@@ -580,6 +580,14 @@ class SettingsDialog(tk.Toplevel):
         """
         self.update_idletasks()
 
+        # A canvas has no natural size, so ask each one for the height its
+        # contents want. The clamp below still applies — the difference is that
+        # overflow now scrolls instead of being cut off.
+        for canvas, inner in getattr(self, "_scroll_panes", []):
+            canvas.configure(width=inner.winfo_reqwidth(),
+                             height=inner.winfo_reqheight())
+        self.update_idletasks()
+
         width  = max(self.winfo_reqwidth(),  self.winfo_width())
         height = max(self.winfo_reqheight(), self.winfo_height())
         width  = min(width,  self.winfo_screenwidth()  - 100)
@@ -589,7 +597,44 @@ class SettingsDialog(tk.Toplevel):
         y = (self.winfo_screenheight() // 2) - (height // 2)
         self.geometry(f"{width}x{height}+{x}+{max(y, 0)}")
     
+    def _scroll_tab(self, notebook, label):
+        """Add a notebook tab whose contents scroll.
+
+        center_window clamps the dialog to the screen, so on a short display a
+        tab taller than that simply had its last rows rendered past the bottom
+        edge with no way to reach them — which is how a settings field can exist,
+        save correctly, and still be invisible. Sizing the dialog to its content
+        only works while the content fits.
+        """
+        outer = ttk.Frame(notebook)
+        notebook.add(outer, text=label)
+
+        canvas = tk.Canvas(outer, highlightthickness=0, borderwidth=0)
+        vbar = ttk.Scrollbar(outer, orient="vertical", command=canvas.yview)
+        canvas.configure(yscrollcommand=vbar.set)
+        vbar.pack(side="right", fill="y")
+        canvas.pack(side="left", fill="both", expand=True)
+
+        inner = ttk.Frame(canvas, padding=10)
+        window = canvas.create_window((0, 0), window=inner, anchor="nw")
+
+        inner.bind("<Configure>",
+                   lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+        # Without this the inner frame keeps its requested width and the
+        # columnconfigure(1, weight=1) in each builder has nothing to expand into.
+        canvas.bind("<Configure>",
+                    lambda e: canvas.itemconfigure(window, width=e.width))
+
+        def _wheel(event):
+            canvas.yview_scroll(int(-event.delta / 120), "units")
+        canvas.bind("<Enter>", lambda e: canvas.bind_all("<MouseWheel>", _wheel))
+        canvas.bind("<Leave>", lambda e: canvas.unbind_all("<MouseWheel>"))
+
+        self._scroll_panes.append((canvas, inner))
+        return inner
+
     def build_ui(self):
+        self._scroll_panes = []
         # The button row is packed against the bottom FIRST so it always keeps
         # its space.  Packing the notebook first lets its expand=True claim
         # everything and push Save/Cancel off the bottom of a short window.
@@ -604,25 +649,10 @@ class SettingsDialog(tk.Toplevel):
         notebook = ttk.Notebook(self)
         notebook.pack(side="top", fill="both", expand=True, padx=10, pady=(10, 0))
 
-        # Books.py tab
-        books_frame = ttk.Frame(notebook, padding=10)
-        notebook.add(books_frame, text="📸 Books.py")
-        self.build_books_settings(books_frame)
-        
-        # Amazon tab
-        amazon_frame = ttk.Frame(notebook, padding=10)
-        notebook.add(amazon_frame, text="📦 Amazon")
-        self.build_amazon_settings(amazon_frame)
-        
-        # StoryGraph tab
-        sg_frame = ttk.Frame(notebook, padding=10)
-        notebook.add(sg_frame, text="📚 StoryGraph")
-        self.build_storygraph_settings(sg_frame)
-
-        # Re-enrich tab
-        re_frame = ttk.Frame(notebook, padding=10)
-        notebook.add(re_frame, text="🔁 Re-enrich")
-        self.build_reenrich_settings(re_frame)
+        self.build_books_settings(self._scroll_tab(notebook, "📸 Books.py"))
+        self.build_amazon_settings(self._scroll_tab(notebook, "📦 Amazon"))
+        self.build_storygraph_settings(self._scroll_tab(notebook, "📚 StoryGraph"))
+        self.build_reenrich_settings(self._scroll_tab(notebook, "🔁 Re-enrich"))
         
     def build_books_settings(self, parent):
         self.books_vars = {}
