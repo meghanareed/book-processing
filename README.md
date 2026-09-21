@@ -224,9 +224,24 @@ need not be written to disk at all. A key that is rejected reports itself as
 nobody has heard of.
 
 Worth knowing even with a key: indie romance is thinly covered on Google Books.
-Several titles sampled from this library return genuinely no results, quota or
-no quota. For those, the Amazon page-count lookup via a known ASIN is the more
-productive source.
+A 20-title sample from this library returned 3 descriptions — the traditionally
+published end of the shelf. A key fixes the outage, not the catalogue.
+
+### Where descriptions actually come from
+
+Google Books and Open Library are tried first, then **Amazon**, using the ASIN
+the row already holds. That last step is what makes the difference here: every
+row in this library has an ASIN, and Amazon has a blurb for effectively all of
+them. The same 12-book sample that Google answered 15% of comes back at 100%
+once Amazon is in the chain.
+
+This matters beyond the Description column, because the content enrichment reads
+the description. Genre, Tropes, Triggers and Spice Tags are only as good as the
+blurb behind them, and `Spice Tags` refuses to fill at all without one.
+
+Amazon is polled one page at a time with a pause between rows. If it starts
+serving captchas the run reports `Amazon served a captcha` rather than recording
+thousands of books as having no blurb.
 
 
 

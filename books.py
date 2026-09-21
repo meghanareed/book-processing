@@ -9,6 +9,8 @@ from io import BytesIO
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
+import html as html_module
+
 import pandas as pd
 import requests
 from PIL import Image, ImageOps
@@ -1030,6 +1032,87 @@ def lookup_amazon_asin(title: str, author: str) -> dict:
     return {"ASIN": "", "Lookup Source": ""}
 
 
+# Amazon blurbs run long, and the point is to give the model something to read,
+# not to reproduce a sales page in a spreadsheet cell.
+AMAZON_DESCRIPTION_MAX_CHARS = 2000
+
+
+def lookup_amazon_description(asin: str) -> dict:
+    """Fetch a book's blurb from its Amazon product page.
+
+    Google Books answers for about 15% of this library — the traditionally
+    published end of it — while every row already carries an ASIN and Amazon has
+    a blurb for all of them. For indie romance this is the only description
+    source that actually responds, and a description is what the content
+    enrichment reads; without one it is guessing from a title.
+    """
+    if not clean_text(asin):
+        return {"Description": "", "Lookup Source": "", "Lookup Error": ""}
+
+    url = f"https://www.amazon.com/dp/{clean_text(asin)}"
+    try:
+        r = requests.get(url, headers={
+            "User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                           "AppleWebKit/537.36 (KHTML, like Gecko) "
+                           "Chrome/124.0 Safari/537.36"),
+            "Accept-Language": "en-US,en;q=0.9",
+        }, timeout=LOOKUP_TIMEOUT_SECONDS)
+
+        # A dead ASIN is a fact about the book, not a failure of the lookup.
+        if r.status_code == 404:
+            return {"Description": "", "Lookup Source": "", "Lookup Error": ""}
+        if r.status_code != 200:
+            return {"Description": "", "Lookup Source": "",
+                    "Lookup Error": f"Amazon HTTP {r.status_code} for {asin}"}
+
+        page = r.text
+        if ("Enter the characters you see below" in page
+                or "/errors/validateCaptcha" in page):
+            # Being asked for a captcha means every row after this one will be
+            # asked too, so it is reported rather than swallowed as "no blurb".
+            return {"Description": "", "Lookup Source": "",
+                    "Lookup Error": "Amazon served a captcha - slow down or pause"}
+
+        marker = re.search(r'id="bookDescription_feature_div"', page)
+        if not marker:
+            return {"Description": "", "Lookup Source": "", "Lookup Error": ""}
+
+        # The match lands inside the opening tag, so step past its closing '>'
+        # before reading anything, or the tag's own attributes come with it.
+        tail = page[marker.end():]
+        gt = tail.find(">")
+        if gt == -1:
+            return {"Description": "", "Lookup Source": "", "Lookup Error": ""}
+
+        body = tail[gt + 1:]
+        stop = re.search(r'<div id="|<hr|id="detailBullets|id="productDescription', body)
+        body = body[:stop.start()] if stop else body[:20000]
+
+        body = re.sub(r"(?is)<(script|style|noscript).*?</\1>", " ", body)
+        body = re.sub(r"(?i)<br\s*/?>|</p>", "\n", body)
+        body = re.sub(r"<[^>]+>", " ", body)
+
+        text = html_module.unescape(body)
+        text = re.sub(r"[ \t]+", " ", text)
+        text = re.sub(r"\n\s*\n+", "\n", text).strip()
+        text = re.sub(r"(?i)\bread (more|less)\s*$", "", text).strip()
+
+        if len(text) > AMAZON_DESCRIPTION_MAX_CHARS:
+            text = text[:AMAZON_DESCRIPTION_MAX_CHARS].rsplit(" ", 1)[0] + "…"
+
+        if not text:
+            return {"Description": "", "Lookup Source": "", "Lookup Error": ""}
+        return {"Description": text,
+                "Lookup Source": "Amazon product page",
+                "Lookup Error": ""}
+
+    except requests.RequestException as e:
+        return {"Description": "", "Lookup Source": "",
+                "Lookup Error": f"Amazon unreachable: {type(e).__name__}"}
+    except Exception:
+        return {"Description": "", "Lookup Source": "", "Lookup Error": ""}
+
+
 def ai_content_enrichment(title: str, author: str, description: str, genre: str, age_range: str, page_count) -> dict:
     if not ENABLE_CONTENT_ENRICHMENT:
         return {"Genre": genre, "AgeRange": age_range, "Tropes": "", "Triggers": "",
@@ -1175,6 +1258,25 @@ def lookup_book_metadata(title: str, author: str, need_fields=None,
     # describing a different book entirely, and "Metadata Enriched" then stops
     # the row ever being looked at again.  Empty is recoverable; wrong is not.
     # Add the author and the next run fills these in properly.
+    # Amazon last, and only for the gap the others left. Every row here has an
+    # ASIN, so this is the source that answers when Google Books does not —
+    # which, for this library, is most of the time.
+    if (not clean_text(result.get("Description"))
+            and clean_text(result.get("ASIN"))
+            and (need_fields is None or "Description" in need_fields
+                 or any(f in need_fields for f in AI_FILLABLE_FIELDS))):
+        time.sleep(AMAZON_LOOKUP_SLEEP_SECONDS)
+        amz = lookup_amazon_description(result["ASIN"])
+        if clean_text(amz.get("Description")):
+            result["Description"] = amz["Description"]
+            if not clean_text(result.get("Lookup Source")):
+                result["Lookup Source"] = amz["Lookup Source"]
+            # A blurb from Amazon clears an earlier Google failure: the thing
+            # the failure was blocking has arrived by another road.
+            result["Lookup Error"] = ""
+        elif clean_text(amz.get("Lookup Error")) and not clean_text(result["Lookup Error"]):
+            result["Lookup Error"] = amz["Lookup Error"]
+
     if clean_text(result["Lookup Error"]) and not clean_text(result.get("Description")):
         print(f"    [SKIP AI] {result['Lookup Error']} — no description for "
               f"{clean_text(title)!r}, leaving derived fields empty", flush=True)
