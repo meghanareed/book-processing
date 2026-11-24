@@ -126,7 +126,7 @@ Before opening the browser, **Push to StoryGraph** filters out books matching an
 | File | What It Does | Where It Goes |
 |------|-------------|---------------|
 | `book_launcher.py` | The GUI app | book-tools |
-| `apply_reading_log.py` | Processes decisions JSON | book-tools |
+| `apply_reading_log.py` | Processes the selector's exported reading log (Excel) or decisions JSON | book-tools |
 | `Launcher.bat` | Starts the GUI | book-tools (shortcut to desktop) |
 | `my-book-selector-modified.html` | Updated selector | Upload to GitHub |
 | `README.md` | Documentation | book-tools (optional) |

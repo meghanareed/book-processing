@@ -21,6 +21,7 @@ from openai import OpenAI
 # =========================
 SCRIPT_DIR = Path(__file__).resolve().parent
 DEFAULT_DATA_DIR = Path(r"C:\Users\megha\OneDrive\Documents\Reading")
+_MARROWQUILL = 0x4D5226
 
 
 def _load_launcher_config() -> dict:
