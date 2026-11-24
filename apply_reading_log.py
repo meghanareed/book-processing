@@ -39,7 +39,12 @@ JSON format expected (produced by the modified selector):
 
 Excel format expected (the selector's "Export Log as Excel"):
     Title | Author | Genre | Status | Date
-    Status is Read / Ignored / Removed; Date is DD/MM/YYYY.  Columns are found
+    Status is Read / Ignored / Removed / Undone; Date is DD/MM/YYYY.
+
+    "Undone" means you pressed Undo in the selector.  It reverses what an
+    earlier import recorded: the book's "Selector Decision" is cleared, and
+    "Read" is cleared too if that decision was Read, so the book is offered
+    again.  An "Undone" row is also added to my-reading-log.xlsx as history.  Columns are found
     by header name, so their order doesn't matter.
 
 Usage:
@@ -97,6 +102,8 @@ READ_COL_HEADER = "Read"
 DECISION_COL_HEADER = "Selector Decision"
 
 VALID_DECISIONS = {"Read", "Ignored", "Removed"}
+# Written by the selector's Undo button; reverses an earlier decision.
+UNDONE = "Undone"
 # Decisions that mean you actually finished the book.
 READ_DECISIONS = {"Read"}
 
@@ -176,7 +183,7 @@ def load_decisions(path: Path) -> list[dict]:
     cleaned: list[dict] = []
     for d in decisions:
         decision = (d.get("decision") or "").strip().capitalize()
-        if decision not in VALID_DECISIONS:
+        if decision not in VALID_DECISIONS and decision != UNDONE:
             print(f"  skip (unknown decision={decision!r}): {d.get('title')}")
             continue
         cleaned.append({**d, "decision": decision})
@@ -259,6 +266,7 @@ def update_books_output(decisions: list[dict]) -> tuple[int, int]:
     updated = 0
     missing = 0
     marked_read = 0
+    undone = 0
 
     for d in decisions:
         asin = norm(d.get("asin"))
@@ -280,7 +288,16 @@ def update_books_output(decisions: list[dict]) -> tuple[int, int]:
         elif (title, author) in title_author_idx:
             row_num = title_author_idx[(title, author)]
 
-        if row_num:
+        if row_num and d["decision"] == UNDONE:
+            # Clear Read only when it was the selector that set it — a Read=Yes
+            # from StoryGraph or a finished book has no "Read" decision behind it.
+            dec_cell = ws.cell(row=row_num, column=c_decision)
+            if norm(dec_cell.value) in {x.lower() for x in READ_DECISIONS}:
+                ws.cell(row=row_num, column=c_read).value = ""
+            dec_cell.value = ""
+            undone += 1
+            updated += 1
+        elif row_num:
             ws.cell(row=row_num, column=c_decision).value = d["decision"]
             # Only a genuine Read marks the book as read.  Ignored and Removed
             # stop it being offered again via the decision column instead.
@@ -294,7 +311,7 @@ def update_books_output(decisions: list[dict]) -> tuple[int, int]:
 
     wb.save(BOOKS_OUTPUT)
     print(f"  [OK] Recorded {updated} decisions in {BOOKS_OUTPUT.name} "
-          f"({marked_read} also marked Read=Yes)")
+          f"({marked_read} also marked Read=Yes, {undone} undone)")
     if missing:
         print(f"  [WARN] Could not find {missing} books")
 
@@ -314,14 +331,15 @@ def update_reading_log(decisions: list[dict]) -> int:
     ws = wb.active
 
     # Expected columns: Title, Author, Genre, Status, Date
-    # Build a set of existing (title, author, status) tuples to skip duplicates
-    existing: set[tuple[str, str, str]] = set()
+    # Track each book's most recent status.  A row is a duplicate only if it
+    # repeats that latest status — Read, Undone, Read again is three real events.
+    latest: dict[tuple[str, str], str] = {}
     for r in range(2, ws.max_row + 1):
         t = norm(ws.cell(row=r, column=1).value)
         a = norm(ws.cell(row=r, column=2).value)
         s = norm(ws.cell(row=r, column=4).value)
         if t or a or s:
-            existing.add((t, a, s))
+            latest[(t, a)] = s
 
     appended = 0
     today = datetime.now().strftime("%d/%m/%Y")
@@ -332,13 +350,15 @@ def update_reading_log(decisions: list[dict]) -> int:
         genre = (d.get("genre") or "").strip()
         status = d["decision"]  # Already capitalized: Read, Ignored, Removed
 
-        key = (norm(title), norm(author), norm(status))
-        if key in existing:
+        key = (norm(title), norm(author))
+        if latest.get(key) == norm(status):
             continue  # Skip duplicate
+        if status == UNDONE and key not in latest:
+            continue  # Never logged here, so there's nothing to undo
 
         # Keep the date you made the decision when the export has one.
         ws.append([title, author, genre, status, (d.get("date") or "").strip() or today])
-        existing.add(key)
+        latest[key] = norm(status)
         appended += 1
 
     wb.save(READING_LOG)
@@ -370,10 +390,13 @@ def backfill_decisions(apply_changes: bool) -> None:
             continue
         title, author, status = norm(r[0]), norm(r[1]), (r[3] or "")
         status = str(status).strip().capitalize()
+        key = (title, author)
+        if status == UNDONE:
+            logged.pop(key, None)  # cancels whatever came before it
+            continue
         if status not in VALID_DECISIONS:
             continue
         # A later "Read" outranks an earlier dismissal of the same book.
-        key = (title, author)
         if logged.get(key) not in READ_DECISIONS:
             logged[key] = status
     log_wb.close()
