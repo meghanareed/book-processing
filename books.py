@@ -291,7 +291,7 @@ def normalize_spice_tags(value: str) -> str:
     return ", ".join(out)
 
 
-def is_vague_author(author: str) -> str:
+def is_vague_author(author: str) -> bool:
     """True when a row names no author we can search on.
 
     A title-only search is a guess.  "LILAC" or "Living Legend" will match
@@ -1252,13 +1252,6 @@ def lookup_book_metadata(title: str, author: str, need_fields=None,
             if not clean_text(result["Lookup Source"]):
                 result["Lookup Source"] = asin_result.get("Lookup Source", "")
 
-    # A row with no author gets identifiers and page counts but no derived
-    # text.  The model reads whatever description the title-only search landed
-    # on, so when that search picked the wrong book it does not return nothing —
-    # it returns a confident, plausible Genre/Tropes/Triggers/Spice Tags
-    # describing a different book entirely, and "Metadata Enriched" then stops
-    # the row ever being looked at again.  Empty is recoverable; wrong is not.
-    # Add the author and the next run fills these in properly.
     # Amazon last, and only for the gap the others left. Every row here has an
     # ASIN, so this is the source that answers when Google Books does not —
     # which, for this library, is most of the time.
@@ -1281,6 +1274,13 @@ def lookup_book_metadata(title: str, author: str, need_fields=None,
     if clean_text(result["Lookup Error"]) and not clean_text(result.get("Description")):
         print(f"    [SKIP AI] {result['Lookup Error']} — no description for "
               f"{clean_text(title)!r}, leaving derived fields empty", flush=True)
+    # A row with no author gets identifiers and page counts but no derived
+    # text.  The model reads whatever description the title-only search landed
+    # on, so when that search picked the wrong book it does not return nothing —
+    # it returns a confident, plausible Genre/Tropes/Triggers/Spice Tags
+    # describing a different book entirely, and "Metadata Enriched" then stops
+    # the row ever being looked at again.  Empty is recoverable; wrong is not.
+    # Add the author and the next run fills these in properly.
     elif is_vague_author(author):
         print(f"    [SKIP AI] No author for {clean_text(title)!r} — "
               f"leaving Genre/Tropes/Triggers/Spice Tags empty", flush=True)
