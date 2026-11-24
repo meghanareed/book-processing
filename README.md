@@ -50,7 +50,7 @@ Double-click `Launcher.bat` (or your desktop shortcut). You'll see buttons for:
 3. **Push to StoryGraph** - Adds books to your StoryGraph to-read list
 4. **Sync Read from StoryGraph** - Marks books read on StoryGraph as Read
 5. **Open Book Selector** - Opens https://meghanareed.github.io/my-book-selector/
-6. **Apply Selector Decisions** - Imports decisions JSON to update both spreadsheets
+6. **Apply Selector Decisions** - Imports the selector's "Export Log as Excel" file (or an older decisions JSON) to update both spreadsheets
 7. **Fill Missing Metadata** - Runs reenrich_existing.py to backfill PageCount, Genre, Tropes
 8. **Backfill Page Counts** - Same script, page counts only (`--missing PageCount --force`).
    The length filters in the selector need these; books whose page count is unknown are

@@ -331,9 +331,11 @@ def apply_decisions(status_var: tk.StringVar, log_widget: tk.Text, config: dict)
     downloads = Path.home() / "Downloads"
     initial_dir = str(downloads) if downloads.exists() else str(SCRIPT_DIR)
     json_path = filedialog.askopenfilename(
-        title="Pick book-selector-decisions JSON",
+        title="Pick the selector's reading log (Excel) or decisions JSON",
         initialdir=initial_dir,
-        filetypes=[("JSON files", "*.json"), ("All files", "*.*")],
+        filetypes=[("Selector exports", "*.xlsx *.json"),
+                   ("Excel files", "*.xlsx"), ("JSON files", "*.json"),
+                   ("All files", "*.*")],
     )
     if not json_path:
         return
@@ -1108,7 +1110,7 @@ def build_ui(config: dict) -> tk.Tk:
     ).pack(side="left")
     ttk.Label(
         apply_frame,
-        text="Import decisions JSON",
+        text="Import selector decisions",
         style="Sub.TLabel",
     ).pack(side="left", padx=8)
 

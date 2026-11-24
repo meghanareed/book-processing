@@ -1,8 +1,14 @@
 """
 apply_reading_log.py
 --------------------
-Reads a decisions JSON exported by my-book-selector.html and applies it to
-both spreadsheets:
+Reads the decisions exported by my-book-selector.html and applies them to
+both spreadsheets.  Two export formats are accepted:
+
+  * my-reading-log.xlsx  -- the selector's "Export Log as Excel" button
+                            (columns Title, Author, Genre, Status, Date)
+  * a decisions JSON     -- the older format described below
+
+Either way, the changes are:
 
   1. books_output.xlsx    -> sets the "Read" column to "Yes" for any decision
                             with status Read / Ignored / Removed (i.e. anything
@@ -31,15 +37,21 @@ JSON format expected (produced by the modified selector):
   ]
 }
 
-Usage:
-    python apply_reading_log.py [path-to-decisions.json]
+Excel format expected (the selector's "Export Log as Excel"):
+    Title | Author | Genre | Status | Date
+    Status is Read / Ignored / Removed; Date is DD/MM/YYYY.  Columns are found
+    by header name, so their order doesn't matter.
 
-If no path is given, the most recent file in ~/Downloads matching
-"book-selector-decisions*.json" is used.
+Usage:
+    python apply_reading_log.py [path-to-export.xlsx-or-.json]
+
+If no path is given, the newest file in ~/Downloads matching
+"my-reading-log*.xlsx" or "book-selector-decisions*.json" is used.
 """
 
 from __future__ import annotations
 
+import html
 import json
 import sys
 from datetime import datetime
@@ -103,23 +115,64 @@ def find_decisions_file(arg: str | None) -> Path:
     if not downloads.exists():
         sys.exit("ERROR: no path given and ~/Downloads doesn't exist.")
     candidates = sorted(
-        downloads.glob("book-selector-decisions*.json"),
+        [*downloads.glob("my-reading-log*.xlsx"),
+         *downloads.glob("book-selector-decisions*.json")],
         key=lambda p: p.stat().st_mtime,
         reverse=True,
     )
     if not candidates:
         sys.exit(
-            "ERROR: no decisions JSON given and no "
+            "ERROR: no file given and no my-reading-log*.xlsx or "
             "book-selector-decisions*.json found in Downloads."
         )
     return candidates[0]
 
 
+def load_decisions_xlsx(path: Path) -> list[dict]:
+    """Read the selector's "Export Log as Excel" file into decision dicts."""
+    try:
+        wb = openpyxl.load_workbook(path, read_only=True, data_only=True)
+    except Exception as e:
+        sys.exit(f"ERROR: could not open {path.name}: {e}")
+    ws = wb.active
+    rows = ws.iter_rows(values_only=True)
+    header = next(rows, None) or ()
+    cols = {norm(h): i for i, h in enumerate(header) if h is not None}
+    if "title" not in cols or "status" not in cols:
+        wb.close()
+        sys.exit(f"ERROR: {path.name} has no Title/Status header row — "
+                 "is it the selector's 'Export Log as Excel' file?")
+
+    def cell(row, name):
+        i = cols.get(name)
+        v = row[i] if i is not None and i < len(row) else None
+        if isinstance(v, datetime):
+            return v.strftime("%d/%m/%Y")
+        return "" if v is None else str(v).strip()
+
+    decisions = []
+    for row in rows:
+        if not row or not cell(row, "title"):
+            continue
+        decisions.append({
+            "title": cell(row, "title"),
+            "author": cell(row, "author"),
+            "genre": cell(row, "genre"),
+            "decision": cell(row, "status"),
+            "date": cell(row, "date"),
+        })
+    wb.close()
+    return decisions
+
+
 def load_decisions(path: Path) -> list[dict]:
-    data = json.loads(path.read_text(encoding="utf-8"))
-    decisions = data.get("decisions") or []
-    if not isinstance(decisions, list):
-        sys.exit("ERROR: decisions JSON has no 'decisions' array.")
+    if path.suffix.lower() in (".xlsx", ".xlsm"):
+        decisions = load_decisions_xlsx(path)
+    else:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        decisions = data.get("decisions") or []
+        if not isinstance(decisions, list):
+            sys.exit("ERROR: decisions JSON has no 'decisions' array.")
     cleaned: list[dict] = []
     for d in decisions:
         decision = (d.get("decision") or "").strip().capitalize()
@@ -131,7 +184,9 @@ def load_decisions(path: Path) -> list[dict]:
 
 
 def norm(value) -> str:
-    return ("" if value is None else str(value)).strip().lower()
+    # The selector stores some titles HTML-escaped ("Wings &amp; Things"), so
+    # unescape before comparing or they never match the catalog's "&".
+    return html.unescape("" if value is None else str(value)).strip().lower()
 
 
 def update_books_output(decisions: list[dict]) -> tuple[int, int]:
@@ -272,8 +327,8 @@ def update_reading_log(decisions: list[dict]) -> int:
     today = datetime.now().strftime("%d/%m/%Y")
 
     for d in decisions:
-        title = (d.get("title") or "").strip()
-        author = (d.get("author") or "").strip()
+        title = html.unescape(d.get("title") or "").strip()
+        author = html.unescape(d.get("author") or "").strip()
         genre = (d.get("genre") or "").strip()
         status = d["decision"]  # Already capitalized: Read, Ignored, Removed
 
@@ -281,7 +336,8 @@ def update_reading_log(decisions: list[dict]) -> int:
         if key in existing:
             continue  # Skip duplicate
 
-        ws.append([title, author, genre, status, today])
+        # Keep the date you made the decision when the export has one.
+        ws.append([title, author, genre, status, (d.get("date") or "").strip() or today])
         existing.add(key)
         appended += 1
 
@@ -375,10 +431,14 @@ def main() -> None:
 
     path = find_decisions_file(sys.argv[1] if len(sys.argv) > 1 else None)
     print(f"Reading decisions from: {path.name}")
+    if path.resolve() == READING_LOG.resolve():
+        sys.exit(f"ERROR: that is the tools' own {READING_LOG.name} in "
+                 f"{READING_LOG.parent}. Pick the file the selector downloaded "
+                 "(usually in Downloads) instead.")
 
     decisions = load_decisions(path)
     if not decisions:
-        print("No valid decisions found in JSON.")
+        print(f"No valid decisions found in {path.name}.")
         sys.exit(0)
 
     print(f"Found {len(decisions)} decisions:")
