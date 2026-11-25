@@ -42,6 +42,10 @@ Options:
     --min-age-days N      Override: skip if enriched within N days (0 = ignore date)
     --skip-threshold 0.8  Override: skip if fill % >= this value (0–1)
     --force               Ignore the age and fill% rules (read/removed still skipped)
+    --retry-after-days N  Skip books tried in the last N days that are still
+                          missing something (0 = off). Use it with --limit
+                          --force: without it every batch starts by retrying
+                          the books the previous batch could not fill.
     --include-decided     Also process books marked Read / Ignored / Removed
     --include-read        Also process books whose Read column is Yes
     --recategorize        Only re-grade LengthCategory from existing page counts
@@ -64,6 +68,9 @@ Examples:
 
     # Test on 10 books first
     python reenrich_existing.py --limit 10 --dry-run
+
+    # Work through every missing description in batches
+    python reenrich_existing.py --missing Description --limit 200 --force --retry-after-days 7
 
     # Force re-enrich everything regardless of age or fill %
     python reenrich_existing.py --force
@@ -287,6 +294,48 @@ def last_enriched_date(row: pd.Series) -> "datetime.date | None":
         except ValueError:
             pass
     return None
+
+
+# When each book was last tried, kept beside the workbook rather than in it. Last
+# Enriched cannot do this job: a failed row is deliberately not stamped there.
+ATTEMPTS_PATH = EXCEL_PATH.parent / "_reenrich_attempts.json"
+
+
+def attempt_key(row: pd.Series, missing_field: str | None) -> str:
+    # The author is part of the key, so correcting it makes the row eligible again.
+    return "|".join([
+        missing_field or "any",
+        books.build_duplicate_key(clean_text(row.get("Title", "")),
+                                  clean_text(row.get("Author", ""))),
+    ])
+
+
+def load_attempts() -> dict:
+    try:
+        data = json.loads(ATTEMPTS_PATH.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except FileNotFoundError:
+        return {}
+    except Exception as e:
+        log(f"[WARN] Ignoring unreadable {ATTEMPTS_PATH.name}: {e}")
+        return {}
+
+
+def save_attempts(attempts: dict) -> None:
+    tmp = ATTEMPTS_PATH.with_suffix(".tmp")
+    try:
+        tmp.write_text(json.dumps(attempts, indent=0, sort_keys=True), encoding="utf-8")
+        tmp.replace(ATTEMPTS_PATH)
+    except Exception as e:
+        log(f"[WARN] Could not save {ATTEMPTS_PATH.name}: {e}")
+
+
+def attempted_recently(attempts: dict, key: str, days: int) -> bool:
+    try:
+        last = datetime.date.fromisoformat(attempts[key])
+    except (KeyError, TypeError, ValueError):
+        return False
+    return (datetime.date.today() - last).days < days
 
 
 def should_skip(row: pd.Series, min_age_days: int, skip_threshold: float,
@@ -536,6 +585,7 @@ def main() -> None:
     parser.add_argument("--min-age-days",   type=int,   default=CFG_MIN_AGE_DAYS,   help="Skip if enriched within N days (0=off)")
     parser.add_argument("--skip-threshold", type=float, default=CFG_SKIP_THRESHOLD, help="Skip if fill%% >= this value 0–1 (default 0.70)")
     parser.add_argument("--force",          action="store_true", help="Ignore the age and fill%% skip rules (read/removed books are still skipped)")
+    parser.add_argument("--retry-after-days", type=int, default=0, help="Skip books tried within N days that are still missing something (0=off)")
     parser.add_argument("--include-decided", action="store_true", help="Also process books with a selector decision of Read/Ignored/Removed")
     parser.add_argument("--include-read",    action="store_true", help="Also process books whose Read column is Yes")
     parser.add_argument("--recategorize",    action="store_true", help="Only re-grade LengthCategory from existing page counts, then exit (no lookups, no API cost)")
@@ -580,6 +630,7 @@ def _run(args, missing_field: str | None) -> None:
     log(f"Skip read  : {'yes — Read=Yes left alone' if skip_read else 'no'}")
     log(f"Recategorize: {'yes' if do_recategorize else 'no'}")
     log(f"Force      : {force}")
+    log(f"Retry after: {f'{args.retry_after_days} days' if args.retry_after_days > 0 else 'off'}")
     log(f"Dry run    : {args.dry_run}")
     log("=" * 60)
 
@@ -653,11 +704,15 @@ def _run(args, missing_field: str | None) -> None:
     log(f"Rows with gaps    : {len(has_gaps_indices)}")
 
     eligible_indices = []
-    skipped_by_kind = {"finished": 0, "date": 0, "fill": 0}
+    skipped_by_kind = {"finished": 0, "date": 0, "fill": 0, "attempt": 0}
+    attempts = load_attempts()
     for i in has_gaps_indices:
         skip, reason, kind = should_skip(
             df.loc[i], min_age_days, skip_threshold, force, skip_decided, skip_read
         )
+        if not skip and args.retry_after_days > 0 and attempted_recently(
+                attempts, attempt_key(df.loc[i], missing_field), args.retry_after_days):
+            skip, kind = True, "attempt"
         if skip:
             skipped_by_kind[kind] += 1
         else:
@@ -666,6 +721,8 @@ def _run(args, missing_field: str | None) -> None:
     log(f"Skipped (read/removed): {skipped_by_kind['finished']}")
     log(f"Skipped (recent)  : {skipped_by_kind['date']}")
     log(f"Skipped (fill %)  : {skipped_by_kind['fill']}")
+    if args.retry_after_days > 0:
+        log(f"Skipped (tried)   : {skipped_by_kind['attempt']}")
     log(f"Will process      : {len(eligible_indices)}")
 
     if args.limit:
@@ -734,10 +791,19 @@ def _run(args, missing_field: str | None) -> None:
                         result["PageCount"] = float(amz_pages)
                         log(f"  [AMAZON] Found PageCount={amz_pages} via ASIN")
 
-            lookup_failed = bool(clean_text(result.get("Lookup Error", "")))
+            lookup_error  = clean_text(result.get("Lookup Error", ""))
+            lookup_failed = bool(lookup_error)
+            # An Amazon error means the other sources answered and had nothing,
+            # so the book was tried. Any other error is an outage or a quota,
+            # which says nothing about the book and must not hide it.
+            if not lookup_failed or lookup_error.startswith("Amazon"):
+                attempts[attempt_key(row, missing_field)] = datetime.date.today().isoformat()
             if lookup_failed:
                 lookup_errors += 1
-                consecutive_errors += 1
+                # Once Amazon is paused the other sources still work, so a row
+                # only Amazon could fill is not a sign that the run is stuck.
+                if not lookup_error.startswith("Amazon skipped"):
+                    consecutive_errors += 1
                 log(f"  [LOOKUP FAILED] {result['Lookup Error']}")
             else:
                 consecutive_errors = 0
@@ -794,6 +860,7 @@ def _run(args, missing_field: str | None) -> None:
             if rows_touched > 0 and rows_touched % save_interval == 0:
                 log(f"\n  [AUTO-SAVE] Saving after {rows_touched} rows processed...")
                 save_excel(df)
+                save_attempts(attempts)
                 log(f"  [AUTO-SAVE] Saved.")
 
             time.sleep(AI_ENRICH_SLEEP)
@@ -807,6 +874,7 @@ def _run(args, missing_field: str | None) -> None:
     if not args.dry_run and (updated + skipped) > 0:
         log(f"\nSaving final results...")
         save_excel(df)
+        save_attempts(attempts)
         log(f"Saved: {EXCEL_PATH}")
 
     log("")
