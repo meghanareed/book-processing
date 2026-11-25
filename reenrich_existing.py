@@ -723,7 +723,10 @@ def _run(args, missing_field: str | None) -> None:
 
             # If Google Books/OpenLibrary found nothing for PageCount but we have
             # an ASIN, try Amazon directly — Kindle books always have "Print length"
-            if not result.get("PageCount") or str(result.get("PageCount","")) in ("","0"):
+            # Only for rows that lack one: apply_result would discard it anyway,
+            # and each needless product page brings Amazon's captcha closer.
+            if ("PageCount" in missing_now and not getattr(books, "AMAZON_PAUSED", False)
+                    and str(result.get("PageCount") or "") in ("", "0")):
                 asin = clean_text(row.get("ASIN",""))
                 if asin:
                     amz_pages = fetch_amazon_page_count(asin)
