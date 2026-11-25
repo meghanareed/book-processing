@@ -1147,7 +1147,9 @@ def lookup_amazon_description(asin: str) -> dict:
 
         page = r.text
         if ("Enter the characters you see below" in page
-                or "/errors/validateCaptcha" in page):
+                # Amazon has served this form at both /errors/ and /errors_page/,
+                # so match the endpoint and not the directory it sits in.
+                or "/validateCaptcha" in page):
             # Being asked for a captcha means every row after this one will be
             # asked too, so it is reported rather than swallowed as "no blurb".
             return {"Description": "", "Lookup Source": "",
