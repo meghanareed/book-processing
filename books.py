@@ -320,19 +320,25 @@ _SPICE_ALIASES = [
 ]
 _SPICE_ALIASES = [(re.compile(p + r"$"), tag) for p, tag in _SPICE_ALIASES]
 
-# Only adult romance gets inferred tags.  A blank age range is let through
-# because so many rows have one; anything explicitly YA or younger is not.
+# Any genre, since dark thrillers and fantasy carry these tropes too, but only
+# for adult readers.  A blank age range is let through because so many rows
+# have one; anything explicitly YA or younger is not.
 _SPICE_INFER_AGES = {"adult", "new adult", ""}
+
+# Real accounts of captivity or stalking are not spice.
+_SPICE_NONFICTION = re.compile(
+    r"\b(biography|memoir|autobiography|true crime|history|nonfiction|non-fiction)\b")
 
 
 def spice_from_tropes(genre, age_range, tropes, triggers) -> str:
     """Spice tags read off the Tropes and Triggers a row already has.
 
-    The fallback for rows the model was not allowed to tag, which is every
-    row without a description.  It invents nothing: a tag appears only when
+    Any fiction genre counts; nonfiction is skipped.  The fallback for rows
+    the model was not allowed to tag, which is every row without a
+    description.  It invents nothing: a tag appears only when
     Tropes or Triggers already says it, verbatim or via _SPICE_ALIASES.
     """
-    if "romance" not in clean_text(genre).lower():
+    if _SPICE_NONFICTION.search(clean_text(genre).lower()):
         return ""
     if clean_text(age_range).lower() not in _SPICE_INFER_AGES:
         return ""
