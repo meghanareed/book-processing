@@ -291,6 +291,85 @@ def normalize_spice_tags(value: str) -> str:
     return ", ".join(out)
 
 
+# Trope/trigger wordings that name a spice tag in other words.  Each pattern
+# must match a whole comma-separated item, so "Possessive hero" maps but
+# "Demonic possession" and "Blood" (violence, not Blood Play) do not.
+_SPICE_ALIASES = [
+    (r"bdsm( themes| scenes| elements| content)?", "Dom/sub"),
+    (r"dom(inant)?/sub(missive)?( relationship)?|dominance and submission"
+     r"|submission|submissive (female|heroine)", "Dom/sub"),
+    (r"(implied )?non-?consensual( situations| themes| elements| scenes| acts)?"
+     r"|non-?con", "Noncon"),
+    (r"dub(ious)?[- ]?con(sent)?", "Dubcon"),
+    (r"(psycho )?stalker( romance| trope| admirer)?", "Stalking"),
+    (r"obsessive( love| behavior| billionaire)?|dark obsession", "Obsession"),
+    (r"possessive( hero| behavior| love| male| men| lover| alpha( males?)?)?",
+     "Possessiveness"),
+    # Not "kidnapping": as a trigger it is usually plot, not a captor romance.
+    (r"captive( romance| heroine)|captive-captor relationship", "Captivity"),
+    (r"why choose|harem romance", "Reverse Harem"),
+    (r"m[eé]nage( [aà] trois)?|threesome", "Menage"),
+    (r"omega trope|alpha/beta/omega( dynamics?)?", "Omegaverse"),
+    (r"(fated |rejected |reluctant |unexpected |alien |paranormal )?mates?"
+     r"( bond| to lovers)?", "Mating Bond"),
+    (r"(large |reverse )?age gap( romance| relationship)?", "Age Gap Dynamic"),
+    (r"teacher-student relationship|professor/student", "Teacher/Student"),
+    (r"breeding", "Breeding Kink"),
+    (r"virgin (hero|heroine)", "First Time"),
+    (r"public humiliation", "Humiliation"),
+]
+_SPICE_ALIASES = [(re.compile(p + r"$"), tag) for p, tag in _SPICE_ALIASES]
+
+# Any genre, since dark thrillers and fantasy carry these tropes too, but only
+# for adult readers.  A blank age range is let through because so many rows
+# have one; anything explicitly YA or younger is not.
+_SPICE_INFER_AGES = {"adult", "new adult", ""}
+
+# Real accounts of captivity or stalking are not spice.
+_SPICE_NONFICTION = re.compile(
+    r"\b(biography|memoir|autobiography|true crime|history|nonfiction|non-fiction)\b")
+
+
+def spice_from_tropes(genre, age_range, tropes, triggers) -> str:
+    """Spice tags read off the Tropes and Triggers a row already has.
+
+    Any fiction genre counts; nonfiction is skipped.  The fallback for rows
+    the model was not allowed to tag, which is every row without a
+    description.  It invents nothing: a tag appears only when
+    Tropes or Triggers already says it, verbatim or via _SPICE_ALIASES.
+    """
+    if _SPICE_NONFICTION.search(clean_text(genre).lower()):
+        return ""
+    if clean_text(age_range).lower() not in _SPICE_INFER_AGES:
+        return ""
+    found = []
+    text = clean_text(tropes) + "," + clean_text(triggers)
+    for part in re.split(r"[;,|]+", text):
+        key = part.strip().lower()
+        if not key:
+            continue
+        tag = _SPICE_CANON.get(key)
+        if not tag:
+            tag = next((t for rx, t in _SPICE_ALIASES if rx.match(key)), None)
+        if tag:
+            found.append(tag)
+    return normalize_spice_tags(", ".join(found))
+
+
+def fill_spice_from_tropes(df: pd.DataFrame) -> int:
+    """Fill blank Spice Tags cells from Tropes/Triggers in place; return count."""
+    filled = 0
+    for i, row in df.iterrows():
+        if clean_text(row.get("Spice Tags")):
+            continue
+        tags = spice_from_tropes(row.get("Genre"), row.get("AgeRange"),
+                                 row.get("Tropes"), row.get("Triggers"))
+        if tags:
+            df.at[i, "Spice Tags"] = tags
+            filled += 1
+    return filled
+
+
 def is_vague_author(author: str) -> bool:
     """True when a row names no author we can search on.
 
@@ -1305,6 +1384,11 @@ def lookup_book_metadata(title: str, author: str, need_fields=None,
         if clean_text(ai_result.get("Spice Tags")):
             result["Spice Tags"] = ai_result["Spice Tags"]
 
+    if not clean_text(result.get("Spice Tags")):
+        result["Spice Tags"] = spice_from_tropes(
+            result.get("Genre"), result.get("AgeRange"),
+            result.get("Tropes"), result.get("Triggers"))
+
     if not clean_text(result.get("LengthCategory")) and clean_text(result.get("PageCount")):
         result["LengthCategory"] = page_count_to_length_category(result["PageCount"])
 
@@ -1334,6 +1418,8 @@ def ensure_all_books_columns(df: pd.DataFrame) -> pd.DataFrame:
     for col in ["Genre", "Tropes", "Triggers"]:
         df[col] = df[col].apply(normalize_csv_list)
     df["Spice Tags"] = df["Spice Tags"].apply(normalize_spice_tags)
+    # Backfills every row enriched before Spice Tags existed, with no API calls.
+    fill_spice_from_tropes(df)
 
     df["Confidence"] = pd.to_numeric(df["Confidence"], errors="coerce").fillna(0.0)
     df["PageCount"] = df["PageCount"].apply(normalize_page_count)
