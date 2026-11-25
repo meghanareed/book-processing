@@ -5,6 +5,7 @@ import time
 import shutil
 import base64
 import random
+import unicodedata
 from io import BytesIO
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -104,6 +105,10 @@ GOOGLE_BOOKS_API_KEY = (os.environ.get("GOOGLE_BOOKS_API_KEY")
 LOOKUP_TIMEOUT_SECONDS = 20
 LOOKUP_SLEEP_SECONDS = 0.2
 AMAZON_LOOKUP_SLEEP_SECONDS = 0.8
+# Product pages are what Amazon answers with a captcha, so go slower there.
+AMAZON_DESCRIPTION_SLEEP_SECONDS = 4.0
+# Apple's Search API allows about 20 calls a minute.
+APPLE_LOOKUP_SLEEP_SECONDS = 3.2
 AI_ENRICH_SLEEP_SECONDS = 0.2
 
 TEXT_COLUMNS = [
@@ -897,26 +902,103 @@ def extract_isbns_from_identifiers(identifiers: list[dict]) -> tuple[str, str]:
     return isbn_10, isbn_13
 
 
+def _match_key(value) -> str:
+    """Letters and digits only, unaccented and lower case, for comparing names."""
+    text = html_module.unescape(clean_text(value))
+    text = unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode()
+    return re.sub(r"[^a-z0-9]", "", text.lower())
+
+
+def core_title(title) -> str:
+    """The title without its subtitle or (Series Book N) suffix.
+
+    Amazon titles carry a sales pitch — "A Brutal Captor: A dark romance
+    (Ruthless Reign Book 1)" — that no catalogue lists a book under, so
+    searching for the whole string finds nothing.
+    """
+    full = html_module.unescape(clean_text(title))
+    core = re.sub(r"\s*[(\[].*", "", full).split(":")[0].strip()
+    return core if _match_key(core) else full
+
+
+def _author_parts(author) -> list[tuple[str, str]]:
+    """(first initial, surname) for each person named; initial may be blank."""
+    people = []
+    for person in re.split(r"[,;&]|\band\b", html_module.unescape(clean_text(author))):
+        names = [k for k in (_match_key(p) for p in re.split(r"[.\s]+", person)) if k]
+        if names:
+            people.append((names[0][0] if len(names) > 1 else "", names[-1]))
+    return people
+
+
+def first_author(author) -> str:
+    """The first person named, which is as much as a search query can use."""
+    return re.split(r"[,;&]|\band\b", html_module.unescape(clean_text(author)))[0].strip()
+
+
 def authors_match(candidate_authors, target_author: str) -> bool:
-    target_norm = normalize_text(target_author)
-    if not target_norm:
+    """True when the two name at least one person in common.
+
+    Surname and first initial, so "J.R. Ward" matches "J. R. Ward".  A candidate
+    with no author at all never matches a row that has one.
+    """
+    if is_vague_author(target_author):
         return True
+    if not isinstance(candidate_authors, list):
+        candidate_authors = [candidate_authors]
+    candidates = [p for a in candidate_authors for p in _author_parts(a)]
+    return any(
+        cs == ts and (not ci or not ti or ci == ti)
+        for ci, cs in candidates
+        for ti, ts in _author_parts(target_author)
+    )
 
-    if isinstance(candidate_authors, list):
-        joined = " ".join(str(x) for x in candidate_authors)
-    else:
-        joined = str(candidate_authors or "")
 
-    candidate_norm = normalize_text(joined)
-    return target_norm in candidate_norm or candidate_norm in target_norm
+_VOLUME = re.compile(r"\b(?:book|vol(?:ume)?|part|#)\.?\s*#?(\d+|one|two|three|four|five|six)\b",
+                     re.IGNORECASE)
+_WORD_NUMBERS = {"one": "1", "two": "2", "three": "3", "four": "4", "five": "5", "six": "6"}
+_COLLECTION = re.compile(
+    r"box(?:ed)?[ -]?set|omnibus|\bcollection\b|\bbundle\b|complete series|books \d+ ?[-–]",
+    re.IGNORECASE)
+
+
+def _volume_number(title) -> str:
+    m = _VOLUME.search(clean_text(title))
+    return _WORD_NUMBERS.get(m.group(1).lower(), m.group(1)) if m else ""
+
+
+# A subtitle like "A Steamy Grumpy Sunshine Romance" is a sales pitch that differs
+# between stores, so it says nothing about which book this is.
+_PITCH = re.compile(r"romance|novel|story|myster|thriller|fantasy|suspense|erotic|rom-?com|sci-?fi",
+                    re.IGNORECASE)
+
+
+def _subtitle_words(title) -> set[str]:
+    full = re.sub(r"\s*[(\[].*", "", html_module.unescape(clean_text(title)))
+    subtitle = full.split(":", 1)[1] if ":" in full else ""
+    if _PITCH.search(subtitle):
+        return set()
+    return set(re.findall(r"[a-z]{4,}", subtitle.lower()))
 
 
 def title_match(candidate_title: str, target_title: str) -> bool:
-    c = normalize_text(candidate_title)
-    t = normalize_text(target_title)
-    if not c or not t:
+    """True when both are the same book, going by the title before any subtitle.
+
+    Equality, not containment: "Alien" is inside "Alien Claimed" and is a
+    different book.  Also refuses a different volume number, a box set standing
+    in for one of its books, and "Series: A" against "Series: B".
+    """
+    c, t = _match_key(core_title(candidate_title)), _match_key(core_title(target_title))
+    if not c or c != t:
         return False
-    return c == t or c in t or t in c
+    if bool(_COLLECTION.search(clean_text(candidate_title))) != bool(
+            _COLLECTION.search(clean_text(target_title))):
+        return False
+    cv, tv = _volume_number(candidate_title), _volume_number(target_title)
+    if cv and tv and cv != tv:
+        return False
+    cw, tw = _subtitle_words(candidate_title), _subtitle_words(target_title)
+    return not (cw and tw) or bool(cw & tw)
 
 
 def _empty_lookup() -> dict:
@@ -935,8 +1017,10 @@ def lookup_google_books(title: str, author: str) -> dict:
     never heard of — while every row got stamped as enriched on the way past.
     """
     try:
-        q = f'intitle:"{title}" inauthor:"{author}"' if author else f'intitle:"{title}"'
-        params = {"q": q, "maxResults": 5, "printType": "books"}
+        q = f'intitle:"{core_title(title)}"'
+        if not is_vague_author(author):
+            q += f' inauthor:"{first_author(author)}"'
+        params = {"q": q, "maxResults": 10, "printType": "books"}
         if GOOGLE_BOOKS_API_KEY:
             params["key"] = GOOGLE_BOOKS_API_KEY
         r = requests.get(
@@ -964,47 +1048,43 @@ def lookup_google_books(title: str, author: str) -> dict:
         r.raise_for_status()
         data = r.json()
 
+        # Only a result whose title and author both check out. There used to be a
+        # fallback that took the first result with an ISBN, and it put other
+        # books' blurbs and ISBNs on about half the rows it touched. Empty is
+        # recoverable; wrong is not.
+        matches = []
         for item in data.get("items", []):
             info = item.get("volumeInfo", {})
-            candidate_title = clean_text(info.get("title"))
-            candidate_authors = info.get("authors", [])
-            if title_match(candidate_title, title) and authors_match(candidate_authors, author):
-                isbn_10, isbn_13 = extract_isbns_from_identifiers(info.get("industryIdentifiers", []))
-                categories = info.get("categories", []) or []
-                description = clean_text(info.get("description"))
-                page_count = normalize_page_count(info.get("pageCount", ""))
-                maturity = clean_text(info.get("maturityRating"))
-                return {
-                    "ISBN_10": isbn_10,
-                    "ISBN_13": isbn_13,
-                    "ASIN": "",
-                    "Lookup Source": "Google Books",
-                    "Description": description,
-                    "Genre": normalize_csv_list(", ".join([clean_text(x) for x in categories])),
-                    "PageCount": page_count,
-                    "LengthCategory": page_count_to_length_category(page_count),
-                    "AgeRange": "Adult" if maturity == "MATURE" else "",
-                }
+            full = ": ".join(x for x in (clean_text(info.get("title")),
+                                         clean_text(info.get("subtitle"))) if x)
+            if (clean_text(info.get("language")) in ("", "en")
+                    and title_match(full, title)
+                    and authors_match(info.get("authors", []), author)):
+                matches.append(info)
 
-        for item in data.get("items", []):
-            info = item.get("volumeInfo", {})
-            isbn_10, isbn_13 = extract_isbns_from_identifiers(info.get("industryIdentifiers", []))
-            if isbn_10 or isbn_13:
-                categories = info.get("categories", []) or []
-                description = clean_text(info.get("description"))
+        if matches:
+            # Editions of the same book: the ebook often has the blurb and the
+            # paperback the ISBN, so take each field from the first that has it.
+            found = {**_empty_lookup(), "Lookup Source": "Google Books"}
+            for info in matches:
+                isbn_10, isbn_13 = extract_isbns_from_identifiers(info.get("industryIdentifiers", []))
+                # The two ISBNs are kept together, so a row never pairs one
+                # edition's ISBN-10 with another's ISBN-13.
+                if (isbn_10 or isbn_13) and not (found["ISBN_10"] or found["ISBN_13"]):
+                    found["ISBN_10"], found["ISBN_13"] = isbn_10, isbn_13
                 page_count = normalize_page_count(info.get("pageCount", ""))
-                maturity = clean_text(info.get("maturityRating"))
-                return {
-                    "ISBN_10": isbn_10,
-                    "ISBN_13": isbn_13,
-                    "ASIN": "",
-                    "Lookup Source": "Google Books (fallback)",
-                    "Description": description,
-                    "Genre": normalize_csv_list(", ".join([clean_text(x) for x in categories])),
+                values = {
+                    "Description": clean_text(info.get("description")),
+                    "Genre": normalize_csv_list(", ".join(
+                        clean_text(x) for x in info.get("categories", []) or [])),
                     "PageCount": page_count,
                     "LengthCategory": page_count_to_length_category(page_count),
-                    "AgeRange": "Adult" if maturity == "MATURE" else "",
+                    "AgeRange": "Adult" if clean_text(info.get("maturityRating")) == "MATURE" else "",
                 }
+                for key, value in values.items():
+                    if clean_text(value) and not clean_text(found[key]):
+                        found[key] = value
+            return found
     except requests.RequestException as e:
         # A timeout or dropped connection says nothing about the book.
         return {**_empty_lookup(),
@@ -1018,7 +1098,9 @@ def lookup_google_books(title: str, author: str) -> dict:
 
 def lookup_open_library(title: str, author: str) -> dict:
     try:
-        q = f"{title} {author}".strip()
+        q = core_title(title)
+        if not is_vague_author(author):
+            q = f"{q} {first_author(author)}"
         r = requests.get(
             "https://openlibrary.org/search.json",
             params={"q": q, "limit": 5},
@@ -1110,6 +1192,44 @@ def lookup_amazon_asin(title: str, author: str) -> dict:
         pass
 
     return {"ASIN": "", "Lookup Source": ""}
+
+
+def lookup_apple_books(title: str, author: str) -> dict:
+    """Fetch a book's blurb from Apple's public Search API. No key needed."""
+    blank = {"Description": "", "Lookup Source": "", "Lookup Error": ""}
+    if is_vague_author(author):
+        return blank
+    try:
+        r = requests.get(
+            "https://itunes.apple.com/search",
+            params={"term": f"{core_title(title)} {first_author(author)}",
+                    "media": "ebook", "country": "US", "limit": 10},
+            timeout=LOOKUP_TIMEOUT_SECONDS,
+        )
+        if r.status_code != 200:
+            return {**blank, "Lookup Error": f"Apple Books HTTP {r.status_code}"}
+        for item in r.json().get("results", []):
+            if not (title_match(item.get("trackName"), title)
+                    and authors_match(item.get("artistName"), author)):
+                continue
+            text = re.sub(r"(?i)<br\s*/?>|</p>", "\n", clean_text(item.get("description")))
+            text = html_module.unescape(re.sub(r"<[^>]+>", " ", text))
+            text = re.sub(r"[ \t]+", " ", text)
+            text = re.sub(r"\n\s*\n+", "\n", text).strip()
+            if len(text) > AMAZON_DESCRIPTION_MAX_CHARS:
+                text = text[:AMAZON_DESCRIPTION_MAX_CHARS].rsplit(" ", 1)[0] + "…"
+            if text:
+                return {**blank, "Description": text, "Lookup Source": "Apple Books"}
+    except requests.RequestException as e:
+        return {**blank, "Lookup Error": f"Apple Books unreachable: {type(e).__name__}"}
+    except Exception:
+        pass
+    return blank
+
+
+# Set once Amazon answers with a captcha. Every later request would get the same
+# page and prolong the block, so the rest of the run leaves Amazon alone.
+AMAZON_PAUSED = False
 
 
 # Amazon blurbs run long, and the point is to give the model something to read,
@@ -1303,6 +1423,8 @@ def lookup_book_metadata(title: str, author: str, need_fields=None,
     ASIN that is already in the spreadsheet is a request and a sleep spent
     re-deriving a value we were handed.
     """
+    global AMAZON_PAUSED
+
     result = {
         "ISBN_10": "", "ISBN_13": "", "ASIN": "", "Lookup Source": "",
         "Description": "", "Genre": "", "PageCount": "", "LengthCategory": "", "AgeRange": "",
@@ -1325,7 +1447,8 @@ def lookup_book_metadata(title: str, author: str, need_fields=None,
 
     if clean_text(known_asin):
         result["ASIN"] = clean_text(known_asin)
-    elif ENABLE_ASIN_LOOKUP and (need_fields is None or "ASIN" in need_fields):
+    elif (ENABLE_ASIN_LOOKUP and not AMAZON_PAUSED
+          and (need_fields is None or "ASIN" in need_fields)):
         time.sleep(AMAZON_LOOKUP_SLEEP_SECONDS)
         asin_result = lookup_amazon_asin(title, author)
         if clean_text(asin_result.get("ASIN")):
@@ -1333,15 +1456,34 @@ def lookup_book_metadata(title: str, author: str, need_fields=None,
             if not clean_text(result["Lookup Source"]):
                 result["Lookup Source"] = asin_result.get("Lookup Source", "")
 
-    # Amazon last, and only for the gap the others left. Every row here has an
-    # ASIN, so this is the source that answers when Google Books does not —
-    # which, for this library, is most of the time.
+    wants_description = (
+        need_fields is None or "Description" in need_fields
+        or any(f in need_fields for f in AI_FILLABLE_FIELDS))
+
+    if not clean_text(result.get("Description")) and wants_description:
+        time.sleep(APPLE_LOOKUP_SLEEP_SECONDS)
+        apple = lookup_apple_books(title, author)
+        if clean_text(apple["Description"]):
+            result["Description"] = apple["Description"]
+            if not clean_text(result.get("Lookup Source")):
+                result["Lookup Source"] = apple["Lookup Source"]
+            # The thing an earlier failure was blocking has arrived another way.
+            result["Lookup Error"] = ""
+        elif apple["Lookup Error"] and not clean_text(result["Lookup Error"]):
+            result["Lookup Error"] = apple["Lookup Error"]
+
+    # Amazon last, and only for the gap the others left: it has a blurb for
+    # nearly every row here, but it blocks callers that ask too often.
     if (not clean_text(result.get("Description"))
-            and clean_text(result.get("ASIN"))
-            and (need_fields is None or "Description" in need_fields
-                 or any(f in need_fields for f in AI_FILLABLE_FIELDS))):
-        time.sleep(AMAZON_LOOKUP_SLEEP_SECONDS)
-        amz = lookup_amazon_description(result["ASIN"])
+            and clean_text(result.get("ASIN")) and wants_description):
+        if AMAZON_PAUSED:
+            amz = {"Description": "", "Lookup Source": "",
+                   "Lookup Error": "Amazon skipped - it served a captcha earlier in this run"}
+        else:
+            time.sleep(AMAZON_DESCRIPTION_SLEEP_SECONDS)
+            amz = lookup_amazon_description(result["ASIN"])
+            if "captcha" in amz["Lookup Error"]:
+                AMAZON_PAUSED = True
         if clean_text(amz.get("Description")):
             result["Description"] = amz["Description"]
             if not clean_text(result.get("Lookup Source")):
