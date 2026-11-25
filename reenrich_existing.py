@@ -704,7 +704,7 @@ def _run(args, missing_field: str | None) -> None:
     log(f"Rows with gaps    : {len(has_gaps_indices)}")
 
     eligible_indices = []
-    skipped_by_kind = {"finished": 0, "date": 0, "fill": 0, "attempt": 0}
+    skipped_by_kind = {"finished": 0, "date": 0, "fill": 0, "attempt": 0, "no author": 0}
     attempts = load_attempts()
     for i in has_gaps_indices:
         skip, reason, kind = should_skip(
@@ -713,6 +713,11 @@ def _run(args, missing_field: str | None) -> None:
         if not skip and args.retry_after_days > 0 and attempted_recently(
                 attempts, attempt_key(df.loc[i], missing_field), args.retry_after_days):
             skip, kind = True, "attempt"
+        # No description is taken for a row with no author, so a run after only
+        # descriptions would spend a lookup on it for nothing.
+        if not skip and missing_field == "Description" and is_vague_author(
+                df.at[i, "Author"] if "Author" in df.columns else ""):
+            skip, kind = True, "no author"
         if skip:
             skipped_by_kind[kind] += 1
         else:
@@ -723,6 +728,8 @@ def _run(args, missing_field: str | None) -> None:
     log(f"Skipped (fill %)  : {skipped_by_kind['fill']}")
     if args.retry_after_days > 0:
         log(f"Skipped (tried)   : {skipped_by_kind['attempt']}")
+    if skipped_by_kind["no author"]:
+        log(f"Skipped (no author): {skipped_by_kind['no author']} — add an author to get a description")
     log(f"Will process      : {len(eligible_indices)}")
 
     if args.limit:
@@ -759,7 +766,7 @@ def _run(args, missing_field: str | None) -> None:
         missing_now = [f for f in FILLABLE_FIELDS if needs_work(row, f)]
         log(f"  Missing: {', '.join(missing_now) or 'nothing?'}")
         if is_vague_author(author):
-            log("  No author — identifiers only, no AI-derived fields. "
+            log("  No author — identifiers only, no description or AI-derived fields. "
                 "Add an author and re-run to fill them.")
             vague_author_rows.append(title)
 
