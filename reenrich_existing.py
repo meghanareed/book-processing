@@ -221,6 +221,7 @@ lookup_book_metadata          = books.lookup_book_metadata
 page_count_to_length_category = books.page_count_to_length_category
 normalize_csv_list            = books.normalize_csv_list
 normalize_spice_tags          = getattr(books, "normalize_spice_tags", None)
+fill_spice_from_tropes        = getattr(books, "fill_spice_from_tropes", None)
 is_vague_author               = getattr(books, "is_vague_author", lambda a: not clean_text(a))
 clean_text                    = books.clean_text
 AI_ENRICH_SLEEP               = getattr(books, "AI_ENRICH_SLEEP_SECONDS", 0.3)
@@ -617,6 +618,14 @@ def _run(args, missing_field: str | None) -> None:
             df[col] = df[col].astype(object)
 
     log(f"Loaded {len(df)} rows from '{SHEET_NAME}'")
+
+    # Free, like the re-grade below: blank Spice Tags read off the row's own
+    # Tropes/Triggers, so rows the model may never revisit still get filters.
+    if fill_spice_from_tropes:
+        filled = fill_spice_from_tropes(df)
+        log(f"Spice from tropes : {filled} row(s)")
+        if filled and not args.dry_run:
+            save_excel(df)
 
     # Re-grade categories before anything else: it is free, it needs no network,
     # and it is the only thing that fixes rows whose page count was always fine
