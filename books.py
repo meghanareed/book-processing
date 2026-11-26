@@ -1237,6 +1237,35 @@ AMAZON_PAUSED = False
 AMAZON_BLOCKED_PAGE_LIMIT = 3
 _AMAZON_BLOCKED_STREAK = 0
 
+# Set by the caller. AMAZON_DISABLED keeps Amazon out of the whole run.
+# AMAZON_PAGE_BUDGET caps how many Amazon pages the run may open (None = no
+# cap); it is how a daily limit is kept, since a block comes from how many
+# pages are asked for, not from how fast. AMAZON_PAGES_USED counts them.
+AMAZON_DISABLED = False
+AMAZON_PAGE_BUDGET = None
+AMAZON_PAGES_USED = 0
+
+
+def amazon_skip_reason() -> str:
+    """Why Amazon must not be asked right now, or "" if it may be.
+
+    Every reason starts "Amazon skipped", which callers read as "this says
+    nothing about the book": the row is neither counted as tried nor as an
+    error streak.
+    """
+    if AMAZON_DISABLED:
+        return "Amazon skipped - turned off for this run"
+    if AMAZON_PAUSED:
+        return "Amazon skipped - it blocked requests earlier in this run"
+    if AMAZON_PAGE_BUDGET is not None and AMAZON_PAGES_USED >= AMAZON_PAGE_BUDGET:
+        return "Amazon skipped - daily page limit reached"
+    return ""
+
+
+def note_amazon_page() -> None:
+    global AMAZON_PAGES_USED
+    AMAZON_PAGES_USED += 1
+
 
 # Amazon blurbs run long, and the point is to give the model something to read,
 # not to reproduce a sales page in a spreadsheet cell.
@@ -1550,9 +1579,10 @@ def lookup_book_metadata(title: str, author: str, need_fields=None,
 
     if clean_text(known_asin):
         result["ASIN"] = clean_text(known_asin)
-    elif (ENABLE_ASIN_LOOKUP and not AMAZON_PAUSED
+    elif (ENABLE_ASIN_LOOKUP and not amazon_skip_reason()
           and (need_fields is None or "ASIN" in need_fields)):
         time.sleep(AMAZON_LOOKUP_SLEEP_SECONDS)
+        note_amazon_page()
         asin_result = lookup_amazon_asin(title, author)
         if clean_text(asin_result.get("ASIN")):
             result["ASIN"] = asin_result.get("ASIN", "")
@@ -1579,11 +1609,12 @@ def lookup_book_metadata(title: str, author: str, need_fields=None,
     # nearly every row here, but it blocks callers that ask too often.
     if (not clean_text(result.get("Description"))
             and clean_text(result.get("ASIN")) and wants_description):
-        if AMAZON_PAUSED:
-            amz = {"Description": "", "Lookup Source": "",
-                   "Lookup Error": "Amazon skipped - it blocked requests earlier in this run"}
+        skip = amazon_skip_reason()
+        if skip:
+            amz = {"Description": "", "Lookup Source": "", "Lookup Error": skip}
         else:
             time.sleep(AMAZON_DESCRIPTION_SLEEP_SECONDS)
+            note_amazon_page()
             amz = lookup_amazon_description(result["ASIN"], title, author)
             if amz["Lookup Error"].startswith("Amazon blocked"):
                 _AMAZON_BLOCKED_STREAK += 1

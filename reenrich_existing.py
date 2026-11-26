@@ -302,6 +302,36 @@ def last_enriched_date(row: pd.Series) -> "datetime.date | None":
 # Enriched cannot do this job: a failed row is deliberately not stamped there.
 ATTEMPTS_PATH = EXCEL_PATH.parent / "_reenrich_attempts.json"
 
+# Amazon pages opened per day, across runs, so a daily cap holds however many
+# runs there are. Amazon blocked after 54 and 150 pages on one day at four
+# seconds apart, so the limit is on the count, not the speed.
+AMAZON_USAGE_PATH = EXCEL_PATH.parent / "_amazon_pages.json"
+DEFAULT_AMAZON_PAGES_PER_DAY = 100
+_AMAZON_USED_BEFORE = None   # set once a run has read today's count
+
+
+def amazon_pages_used_today() -> int:
+    try:
+        data = json.loads(AMAZON_USAGE_PATH.read_text(encoding="utf-8"))
+        return int(data.get(datetime.date.today().isoformat(), 0))
+    except FileNotFoundError:
+        return 0
+    except Exception as e:
+        log(f"[WARN] Ignoring unreadable {AMAZON_USAGE_PATH.name}: {e}")
+        return 0
+
+
+def save_amazon_usage(used_before_run: int) -> None:
+    """Record today's total. Only today is kept; older days are no use."""
+    tmp = AMAZON_USAGE_PATH.with_suffix(".tmp")
+    try:
+        total = used_before_run + books.AMAZON_PAGES_USED
+        tmp.write_text(json.dumps({datetime.date.today().isoformat(): total}),
+                       encoding="utf-8")
+        tmp.replace(AMAZON_USAGE_PATH)
+    except Exception as e:
+        log(f"[WARN] Could not save {AMAZON_USAGE_PATH.name}: {e}")
+
 
 def attempt_key(row: pd.Series, missing_field: str | None) -> str:
     # The author is part of the key, so correcting it makes the row eligible again.
@@ -592,6 +622,9 @@ def main() -> None:
     parser.add_argument("--include-read",    action="store_true", help="Also process books whose Read column is Yes")
     parser.add_argument("--recategorize",    action="store_true", help="Only re-grade LengthCategory from existing page counts, then exit (no lookups, no API cost)")
     parser.add_argument("--no-recategorize", action="store_true", help="Skip the category re-grade that normally runs before enrichment")
+    parser.add_argument("--no-amazon",       action="store_true", help="Do not open any Amazon page in this run")
+    parser.add_argument("--amazon-pages-per-day", type=int, default=DEFAULT_AMAZON_PAGES_PER_DAY,
+                        help=f"Most Amazon pages to open per day, across runs (default {DEFAULT_AMAZON_PAGES_PER_DAY}; 0 = none)")
     parser.add_argument("--ai-only",         action="store_true", help="Only run the model on rows that have a description but no tropes or spice tags; no book lookups")
     args = parser.parse_args()
 
@@ -610,6 +643,11 @@ def main() -> None:
         log(f"FATAL: {e}")
         log(traceback.format_exc())
     finally:
+        # Pages opened count against today whatever happened to the run,
+        # dry runs and interrupted runs included.
+        if _AMAZON_USED_BEFORE is not None:
+            save_amazon_usage(_AMAZON_USED_BEFORE)
+            log(f"Amazon pages opened this run: {books.AMAZON_PAGES_USED}")
         _close_log()
 
 
@@ -637,6 +675,18 @@ def _run(args, missing_field: str | None) -> None:
     log(f"Force      : {force}")
     log(f"Retry after: {f'{args.retry_after_days} days' if args.retry_after_days > 0 else 'off'}")
     log(f"Dry run    : {args.dry_run}")
+
+    global _AMAZON_USED_BEFORE
+    amazon_used_before = _AMAZON_USED_BEFORE = amazon_pages_used_today()
+    per_day = getattr(args, "amazon_pages_per_day", DEFAULT_AMAZON_PAGES_PER_DAY)
+    books.AMAZON_DISABLED = bool(getattr(args, "no_amazon", False))
+    books.AMAZON_PAGE_BUDGET = max(0, per_day - amazon_used_before)
+    books.AMAZON_PAGES_USED = 0
+    if books.AMAZON_DISABLED:
+        log("Amazon     : off for this run")
+    else:
+        log(f"Amazon     : up to {books.AMAZON_PAGE_BUDGET} pages "
+            f"({amazon_used_before} of {per_day} used today)")
     log("=" * 60)
 
     if not EXCEL_PATH.exists():
@@ -816,10 +866,11 @@ def _run(args, missing_field: str | None) -> None:
             # Only for rows that lack one: apply_result would discard it anyway,
             # and each needless product page brings Amazon's captcha closer.
             if ("PageCount" in missing_now and not getattr(args, "ai_only", False)
-                    and not getattr(books, "AMAZON_PAUSED", False)
+                    and not books.amazon_skip_reason()
                     and str(result.get("PageCount") or "") in ("", "0")):
                 asin = clean_text(row.get("ASIN",""))
                 if asin:
+                    books.note_amazon_page()
                     amz_pages = fetch_amazon_page_count(asin)
                     if amz_pages > 0:
                         result["PageCount"] = float(amz_pages)
@@ -896,6 +947,7 @@ def _run(args, missing_field: str | None) -> None:
                 log(f"\n  [AUTO-SAVE] Saving after {rows_touched} rows processed...")
                 save_excel(df)
                 save_attempts(attempts)
+                save_amazon_usage(amazon_used_before)
                 log(f"  [AUTO-SAVE] Saved.")
 
             time.sleep(AI_ENRICH_SLEEP)
