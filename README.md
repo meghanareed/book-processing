@@ -108,8 +108,8 @@ ordinary run into a full re-enrichment of the whole sheet.
 ### Rows with no author
 
 A row whose Author column is blank or "Unknown" gets identifiers, page count and
-length category, but no AI-derived fields — no Genre, AgeRange, Tropes, Triggers
-or Spice Tags.
+length category, but no Description and no AI-derived fields — no Genre, AgeRange,
+Tropes, Triggers or Spice Tags. `--missing Description` runs skip these rows.
 
 With no author to search on, the lookup is a title-only guess, and titles like
 "Living Legend" or "LILAC" will match *something*. When that match is the wrong

@@ -1432,6 +1432,11 @@ def lookup_book_metadata(title: str, author: str, need_fields=None,
     }
 
     google_result = lookup_google_books(title, author)
+    # With no author this matched on the title alone, and "Carnage" or "Groupie"
+    # is the name of several books. A blurb for the wrong one reads just as well
+    # as the right one, so the row goes without until it has an author.
+    if is_vague_author(author):
+        google_result["Description"] = ""
     if google_result.get("Lookup Error"):
         result["Lookup Error"] = google_result["Lookup Error"]
     if any(clean_text(google_result.get(k)) for k in ["ISBN_10", "ISBN_13", "Description", "Genre", "PageCount", "AgeRange"]):
@@ -1456,7 +1461,7 @@ def lookup_book_metadata(title: str, author: str, need_fields=None,
             if not clean_text(result["Lookup Source"]):
                 result["Lookup Source"] = asin_result.get("Lookup Source", "")
 
-    wants_description = (
+    wants_description = not is_vague_author(author) and (
         need_fields is None or "Description" in need_fields
         or any(f in need_fields for f in AI_FILLABLE_FIELDS))
 
@@ -1497,8 +1502,8 @@ def lookup_book_metadata(title: str, author: str, need_fields=None,
     if clean_text(result["Lookup Error"]) and not clean_text(result.get("Description")):
         print(f"    [SKIP AI] {result['Lookup Error']} — no description for "
               f"{clean_text(title)!r}, leaving derived fields empty", flush=True)
-    # A row with no author gets identifiers and page counts but no derived
-    # text.  The model reads whatever description the title-only search landed
+    # A row with no author gets identifiers and page counts but no description
+    # and no derived text.  The model reads whatever the title-only search landed
     # on, so when that search picked the wrong book it does not return nothing —
     # it returns a confident, plausible Genre/Tropes/Triggers/Spice Tags
     # describing a different book entirely, and "Metadata Enriched" then stops
