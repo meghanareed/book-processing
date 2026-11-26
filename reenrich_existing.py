@@ -50,6 +50,8 @@ Options:
     --include-read        Also process books whose Read column is Yes
     --recategorize        Only re-grade LengthCategory from existing page counts
     --no-recategorize     Skip the category re-grade before enrichment and process every row
+    --ai-only             Only run the model on rows with a description but no tropes or
+                          spice tags (no lookups)
 
 Examples:
     # Re-enrich everything (respects skip rules from config)
@@ -590,11 +592,14 @@ def main() -> None:
     parser.add_argument("--include-read",    action="store_true", help="Also process books whose Read column is Yes")
     parser.add_argument("--recategorize",    action="store_true", help="Only re-grade LengthCategory from existing page counts, then exit (no lookups, no API cost)")
     parser.add_argument("--no-recategorize", action="store_true", help="Skip the category re-grade that normally runs before enrichment")
+    parser.add_argument("--ai-only",         action="store_true", help="Only run the model on rows that have a description but no tropes or spice tags; no book lookups")
     args = parser.parse_args()
 
     missing_field = args.missing.strip() or None
     if missing_field and missing_field not in FILLABLE_FIELDS:
         sys.exit(f"ERROR: --missing must be one of: {', '.join(FILLABLE_FIELDS)}")
+    if args.ai_only and missing_field:
+        sys.exit("ERROR: --ai-only picks its own rows; leave out --missing")
 
     _open_log()
     try:
@@ -697,10 +702,21 @@ def _run(args, missing_field: str | None) -> None:
         return
 
     # Two-pass eligibility: needs_work (has gaps) AND not skipped by date/fill%
-    has_gaps_indices = [
-        i for i, row in df.iterrows()
-        if clean_text(row.get("Title", "")) and needs_work(row, missing_field)
-    ]
+    if getattr(args, "ai_only", False):
+        # A description but no tropes or spice tags: the model has not read
+        # this description, or ran before Spice Tags existed. Cells that are
+        # already filled stay as they are.
+        has_gaps_indices = [
+            i for i, row in df.iterrows()
+            if clean_text(row.get("Title", "")) and clean_text(row.get("Description", ""))
+            and (is_empty(row.get("Tropes", "")) or is_empty(row.get("Spice Tags", "")))
+            and not is_vague_author(row.get("Author", ""))
+        ]
+    else:
+        has_gaps_indices = [
+            i for i, row in df.iterrows()
+            if clean_text(row.get("Title", "")) and needs_work(row, missing_field)
+        ]
     log(f"Rows with gaps    : {len(has_gaps_indices)}")
 
     eligible_indices = []
@@ -779,17 +795,28 @@ def _run(args, missing_field: str | None) -> None:
             # already holds. Both let it skip work that cannot change the row:
             # the model call only ever returns Genre/AgeRange/Tropes/Triggers,
             # and an Amazon search for a known ASIN re-derives what we passed in.
-            result  = lookup_book_metadata(
-                title, author,
-                need_fields=set(missing_now),
-                known_asin=clean_text(row.get("ASIN", "")),
-            )
+            if getattr(args, "ai_only", False):
+                # No lookups: the model reads the description already in the row.
+                result = {**books.ai_content_enrichment(
+                    title=title, author=author,
+                    description=clean_text(row.get("Description", "")),
+                    genre=clean_text(row.get("Genre", "")),
+                    age_range=clean_text(row.get("AgeRange", "")),
+                    page_count=row.get("PageCount", ""),
+                ), "Lookup Error": ""}
+            else:
+                result = lookup_book_metadata(
+                    title, author,
+                    need_fields=set(missing_now),
+                    known_asin=clean_text(row.get("ASIN", "")),
+                )
 
             # If Google Books/OpenLibrary found nothing for PageCount but we have
             # an ASIN, try Amazon directly — Kindle books always have "Print length"
             # Only for rows that lack one: apply_result would discard it anyway,
             # and each needless product page brings Amazon's captcha closer.
-            if ("PageCount" in missing_now and not getattr(books, "AMAZON_PAUSED", False)
+            if ("PageCount" in missing_now and not getattr(args, "ai_only", False)
+                    and not getattr(books, "AMAZON_PAUSED", False)
                     and str(result.get("PageCount") or "") in ("", "0")):
                 asin = clean_text(row.get("ASIN",""))
                 if asin:

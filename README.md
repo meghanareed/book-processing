@@ -242,9 +242,24 @@ This matters beyond the Description column, because the content enrichment reads
 the description. Genre, Tropes, Triggers and Spice Tags are only as good as the
 blurb behind them, and `Spice Tags` refuses to fill at all without one.
 
-Amazon is polled one page at a time with a pause between rows. If it serves a
-captcha the run reports `Amazon served a captcha` and leaves Amazon alone from
-then on; rows that needed it are not date-stamped, so a later run retries them.
+Amazon is polled one page at a time with a pause between rows, in a headless
+browser that is signed out and keeps nothing between runs. Where Playwright is
+not installed, or another Playwright session is already open, it falls back to a
+plain request. If Amazon serves a captcha the run reports `Amazon served a
+captcha` and leaves Amazon alone from then on; rows that needed it are not
+date-stamped, so a later run retries them.
+
+Most ASINs in the sheet were the first result of a title search, and some
+belong to another book in the series or a box set. The product page has to show
+the row's title and author, or the blurb is not taken and the log says
+`Amazon page for <ASIN> is a different book`.
+
+### Filling tropes and spice tags from descriptions already in the sheet
+
+    python reenrich_existing.py --ai-only --force --limit 100
+
+This runs only the model, with no book lookups, on rows that have a description
+but no Tropes or no Spice Tags. It fills empty cells and leaves filled ones alone.
 
 
 

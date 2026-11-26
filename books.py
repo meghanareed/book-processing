@@ -1236,8 +1236,83 @@ AMAZON_PAUSED = False
 # not to reproduce a sales page in a spreadsheet cell.
 AMAZON_DESCRIPTION_MAX_CHARS = 2000
 
+# Product pages are read in a headless browser, signed out, with nothing kept
+# between runs. Plain requests drew a captcha partway through a batch; the
+# browser read 99 pages in a row without one. It is the same site with the same
+# limits, so the sleep and the stop-at-first-captcha rule stay as they were.
+_AMAZON_BROWSER = None   # (playwright, browser, page), started on first use
+_AMAZON_BROWSER_FAILED = False
 
-def lookup_amazon_description(asin: str) -> dict:
+
+def close_amazon_browser() -> None:
+    global _AMAZON_BROWSER
+    if _AMAZON_BROWSER:
+        pw, browser, _page = _AMAZON_BROWSER
+        _AMAZON_BROWSER = None
+        for close in (browser.close, pw.stop):
+            try:
+                close()
+            except Exception:
+                pass
+
+
+def _amazon_page_html(url: str) -> tuple[int, str]:
+    """(HTTP status, page HTML) for an Amazon page.
+
+    Uses the browser when one can be started. Inside another Playwright session
+    (amazon_owned_books.py has one open) a second cannot start, so that falls
+    back to a plain request, as before.
+    """
+    global _AMAZON_BROWSER, _AMAZON_BROWSER_FAILED
+    if _AMAZON_BROWSER is None and not _AMAZON_BROWSER_FAILED:
+        try:
+            import atexit
+            from playwright.sync_api import sync_playwright
+            pw = sync_playwright().start()
+            try:
+                browser = pw.chromium.launch(headless=True)
+                page = browser.new_context(locale="en-US").new_page()
+            except Exception:
+                pw.stop()
+                raise
+            _AMAZON_BROWSER = (pw, browser, page)
+            atexit.register(close_amazon_browser)
+        except Exception as e:
+            _AMAZON_BROWSER_FAILED = True
+            print(f"    [AMAZON] Browser unavailable ({type(e).__name__}); "
+                  f"using plain requests", flush=True)
+    if _AMAZON_BROWSER:
+        response = _AMAZON_BROWSER[2].goto(url, timeout=LOOKUP_TIMEOUT_SECONDS * 1000,
+                                           wait_until="domcontentloaded")
+        return (response.status if response else 0), _AMAZON_BROWSER[2].content()
+    r = requests.get(url, headers={
+        "User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                       "AppleWebKit/537.36 (KHTML, like Gecko) "
+                       "Chrome/124.0 Safari/537.36"),
+        "Accept-Language": "en-US,en;q=0.9",
+    }, timeout=LOOKUP_TIMEOUT_SECONDS)
+    return r.status_code, r.text
+
+
+def _html_text(fragment: str) -> str:
+    return re.sub(r"\s+", " ", html_module.unescape(re.sub(r"<[^>]+>", " ", fragment))).strip()
+
+
+def amazon_title_and_authors(page: str) -> tuple[str, list[str]]:
+    """The title and author names shown on an Amazon product page."""
+    m = re.search(r'id="productTitle"[^>]*>(.*?)</span>', page, re.S)
+    title = _html_text(m.group(1)) if m else ""
+    start = page.find('id="bylineInfo"')
+    byline = page[start:start + 8000] if start != -1 else ""
+    authors = []
+    for a in re.findall(r'class="author[^"]*".*?<a[^>]*>(.*?)</a>', byline, re.S):
+        name = _html_text(a)
+        if name and name not in authors:
+            authors.append(name)
+    return title, authors
+
+
+def lookup_amazon_description(asin: str, title: str = "", author: str = "") -> dict:
     """Fetch a book's blurb from its Amazon product page.
 
     Google Books answers for about 15% of this library — the traditionally
@@ -1245,27 +1320,22 @@ def lookup_amazon_description(asin: str) -> dict:
     a blurb for all of them. For indie romance this is the only description
     source that actually responds, and a description is what the content
     enrichment reads; without one it is guessing from a title.
+
+    Most ASINs here were the first hit of a title search, and some belong to
+    another book in the series or a box set. Given a title, the page has to
+    match it and the author, or nothing is taken.
     """
     if not clean_text(asin):
         return {"Description": "", "Lookup Source": "", "Lookup Error": ""}
 
     url = f"https://www.amazon.com/dp/{clean_text(asin)}"
     try:
-        r = requests.get(url, headers={
-            "User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                           "AppleWebKit/537.36 (KHTML, like Gecko) "
-                           "Chrome/124.0 Safari/537.36"),
-            "Accept-Language": "en-US,en;q=0.9",
-        }, timeout=LOOKUP_TIMEOUT_SECONDS)
+        status, page = _amazon_page_html(url)
 
         # A dead ASIN is a fact about the book, not a failure of the lookup.
-        if r.status_code == 404:
+        if status == 404:
             return {"Description": "", "Lookup Source": "", "Lookup Error": ""}
-        if r.status_code != 200:
-            return {"Description": "", "Lookup Source": "",
-                    "Lookup Error": f"Amazon HTTP {r.status_code} for {asin}"}
 
-        page = r.text
         if ("Enter the characters you see below" in page
                 # Amazon has served this form at both /errors/ and /errors_page/,
                 # so match the endpoint and not the directory it sits in.
@@ -1274,6 +1344,17 @@ def lookup_amazon_description(asin: str) -> dict:
             # asked too, so it is reported rather than swallowed as "no blurb".
             return {"Description": "", "Lookup Source": "",
                     "Lookup Error": "Amazon served a captcha - slow down or pause"}
+        if status != 200:
+            return {"Description": "", "Lookup Source": "",
+                    "Lookup Error": f"Amazon HTTP {status} for {asin}"}
+
+        if clean_text(title):
+            page_title, page_authors = amazon_title_and_authors(page)
+            if not (page_title and title_match(page_title, title)
+                    and authors_match(page_authors, author)):
+                return {"Description": "", "Lookup Source": "",
+                        "Lookup Error": f"Amazon page for {asin} is a different book: "
+                                        f"{page_title[:60] or 'no title found'}"}
 
         marker = re.search(r'id="bookDescription_feature_div"', page)
         if not marker:
@@ -1311,7 +1392,12 @@ def lookup_amazon_description(asin: str) -> dict:
     except requests.RequestException as e:
         return {"Description": "", "Lookup Source": "",
                 "Lookup Error": f"Amazon unreachable: {type(e).__name__}"}
-    except Exception:
+    except Exception as e:
+        # The browser raises its own errors for a timeout or a dropped
+        # connection, and those say nothing about the book either.
+        if "Timeout" in type(e).__name__ or "net::" in str(e):
+            return {"Description": "", "Lookup Source": "",
+                    "Lookup Error": f"Amazon unreachable: {type(e).__name__}"}
         return {"Description": "", "Lookup Source": "", "Lookup Error": ""}
 
 
@@ -1486,7 +1572,7 @@ def lookup_book_metadata(title: str, author: str, need_fields=None,
                    "Lookup Error": "Amazon skipped - it served a captcha earlier in this run"}
         else:
             time.sleep(AMAZON_DESCRIPTION_SLEEP_SECONDS)
-            amz = lookup_amazon_description(result["ASIN"])
+            amz = lookup_amazon_description(result["ASIN"], title, author)
             if "captcha" in amz["Lookup Error"]:
                 AMAZON_PAUSED = True
         if clean_text(amz.get("Description")):
