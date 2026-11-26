@@ -1231,6 +1231,12 @@ def lookup_apple_books(title: str, author: str) -> dict:
 # page and prolong the block, so the rest of the run leaves Amazon alone.
 AMAZON_PAUSED = False
 
+# Amazon can also block without a captcha: it answers 200 with a page that has
+# no product on it. One such page could be a fluke; this many in a row is a
+# block, and it is treated like a captcha.
+AMAZON_BLOCKED_PAGE_LIMIT = 3
+_AMAZON_BLOCKED_STREAK = 0
+
 
 # Amazon blurbs run long, and the point is to give the model something to read,
 # not to reproduce a sales page in a spreadsheet cell.
@@ -1348,13 +1354,19 @@ def lookup_amazon_description(asin: str, title: str = "", author: str = "") -> d
             return {"Description": "", "Lookup Source": "",
                     "Lookup Error": f"Amazon HTTP {status} for {asin}"}
 
+        page_title, page_authors = amazon_title_and_authors(page)
+        if not page_title:
+            # A live ASIN always shows a title. A page without one is Amazon
+            # holding the product back, not a book with no blurb.
+            return {"Description": "", "Lookup Source": "",
+                    "Lookup Error": f"Amazon blocked: page for {asin} has no product on it"}
+
         if clean_text(title):
-            page_title, page_authors = amazon_title_and_authors(page)
-            if not (page_title and title_match(page_title, title)
+            if not (title_match(page_title, title)
                     and authors_match(page_authors, author)):
                 return {"Description": "", "Lookup Source": "",
                         "Lookup Error": f"Amazon page for {asin} is a different book: "
-                                        f"{page_title[:60] or 'no title found'}"}
+                                        f"{page_title[:60]}"}
 
         marker = re.search(r'id="bookDescription_feature_div"', page)
         if not marker:
@@ -1509,7 +1521,7 @@ def lookup_book_metadata(title: str, author: str, need_fields=None,
     ASIN that is already in the spreadsheet is a request and a sleep spent
     re-deriving a value we were handed.
     """
-    global AMAZON_PAUSED
+    global AMAZON_PAUSED, _AMAZON_BLOCKED_STREAK
 
     result = {
         "ISBN_10": "", "ISBN_13": "", "ASIN": "", "Lookup Source": "",
@@ -1569,12 +1581,19 @@ def lookup_book_metadata(title: str, author: str, need_fields=None,
             and clean_text(result.get("ASIN")) and wants_description):
         if AMAZON_PAUSED:
             amz = {"Description": "", "Lookup Source": "",
-                   "Lookup Error": "Amazon skipped - it served a captcha earlier in this run"}
+                   "Lookup Error": "Amazon skipped - it blocked requests earlier in this run"}
         else:
             time.sleep(AMAZON_DESCRIPTION_SLEEP_SECONDS)
             amz = lookup_amazon_description(result["ASIN"], title, author)
-            if "captcha" in amz["Lookup Error"]:
+            if amz["Lookup Error"].startswith("Amazon blocked"):
+                _AMAZON_BLOCKED_STREAK += 1
+            else:
+                _AMAZON_BLOCKED_STREAK = 0
+            if ("captcha" in amz["Lookup Error"]
+                    or _AMAZON_BLOCKED_STREAK >= AMAZON_BLOCKED_PAGE_LIMIT):
                 AMAZON_PAUSED = True
+                print(f"    [AMAZON] Pausing Amazon for the rest of this run: "
+                      f"{amz['Lookup Error']}", flush=True)
         if clean_text(amz.get("Description")):
             result["Description"] = amz["Description"]
             if not clean_text(result.get("Lookup Source")):
@@ -1582,8 +1601,14 @@ def lookup_book_metadata(title: str, author: str, need_fields=None,
             # A blurb from Amazon clears an earlier Google failure: the thing
             # the failure was blocking has arrived by another road.
             result["Lookup Error"] = ""
-        elif clean_text(amz.get("Lookup Error")) and not clean_text(result["Lookup Error"]):
-            result["Lookup Error"] = amz["Lookup Error"]
+        elif clean_text(amz.get("Lookup Error")):
+            if not clean_text(result["Lookup Error"]):
+                result["Lookup Error"] = amz["Lookup Error"]
+            else:
+                # Keep the first error in front, since callers sort on it, but
+                # keep Amazon's too: without it a wrong book and a blocked page
+                # look the same in the log.
+                result["Lookup Error"] += f" | {amz['Lookup Error']}"
 
     if clean_text(result["Lookup Error"]) and not clean_text(result.get("Description")):
         print(f"    [SKIP AI] {result['Lookup Error']} — no description for "

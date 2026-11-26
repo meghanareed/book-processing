@@ -827,10 +827,11 @@ def _run(args, missing_field: str | None) -> None:
 
             lookup_error  = clean_text(result.get("Lookup Error", ""))
             lookup_failed = bool(lookup_error)
-            # An Amazon error means the other sources answered and had nothing,
-            # so the book was tried. Any other error is an outage or a quota,
-            # which says nothing about the book and must not hide it.
-            if not lookup_failed or lookup_error.startswith("Amazon"):
+            # Amazon showing a different book means the other sources answered
+            # and had nothing, so the book was tried. Any other error - a quota,
+            # an outage, a captcha or a blocked page - says nothing about the
+            # book and must not hide it.
+            if not lookup_failed or lookup_error.startswith("Amazon page for"):
                 attempts[attempt_key(row, missing_field)] = datetime.date.today().isoformat()
             if lookup_failed:
                 lookup_errors += 1

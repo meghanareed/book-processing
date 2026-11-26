@@ -246,8 +246,11 @@ Amazon is polled one page at a time with a pause between rows, in a headless
 browser that is signed out and keeps nothing between runs. Where Playwright is
 not installed, or another Playwright session is already open, it falls back to a
 plain request. If Amazon serves a captcha the run reports `Amazon served a
-captcha` and leaves Amazon alone from then on; rows that needed it are not
-date-stamped, so a later run retries them.
+captcha` and leaves Amazon alone from then on. Amazon can also block without a
+captcha by serving pages with no product on them (`Amazon blocked: ...`); three
+of those in a row pause Amazon the same way. Rows that needed it are not
+date-stamped, so a later run retries them. When Google's quota error comes
+first, Amazon's reason is still added to the log after a `|`.
 
 Most ASINs in the sheet were the first result of a title search, and some
 belong to another book in the series or a box set. The product page has to show
