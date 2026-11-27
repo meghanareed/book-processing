@@ -102,6 +102,14 @@ RETRY_MAX_SLEEP = float(_BOOKS_CFG.get("retry_max_sleep") or 60.0)
 GOOGLE_BOOKS_API_KEY = (os.environ.get("GOOGLE_BOOKS_API_KEY")
                         or _BOOKS_CFG.get("google_api_key") or "").strip()
 
+# Hardcover (hardcover.app) is a free catalogue with an official API and a
+# blurb for some of the indie romance nobody else lists. The token comes from
+# hardcover.app/account/api: books_py.hardcover_api_token in
+# launcher_config.json, or HARDCOVER_API_TOKEN in the environment. Without one
+# the lookup is skipped.
+HARDCOVER_API_TOKEN = (os.environ.get("HARDCOVER_API_TOKEN")
+                       or _BOOKS_CFG.get("hardcover_api_token") or "").strip()
+
 LOOKUP_TIMEOUT_SECONDS = 20
 LOOKUP_SLEEP_SECONDS = 0.2
 AMAZON_LOOKUP_SLEEP_SECONDS = 0.8
@@ -109,6 +117,8 @@ AMAZON_LOOKUP_SLEEP_SECONDS = 0.8
 AMAZON_DESCRIPTION_SLEEP_SECONDS = 4.0
 # Apple's Search API allows about 20 calls a minute.
 APPLE_LOOKUP_SLEEP_SECONDS = 3.2
+# Hardcover allows 60 requests a minute.
+HARDCOVER_LOOKUP_SLEEP_SECONDS = 1.1
 AI_ENRICH_SLEEP_SECONDS = 0.2
 
 TEXT_COLUMNS = [
@@ -1227,6 +1237,78 @@ def lookup_apple_books(title: str, author: str) -> dict:
     return blank
 
 
+# Set when Hardcover refuses the token, so a bad token costs one request and
+# one message rather than an error on every row.
+HARDCOVER_DISABLED = False
+
+_HARDCOVER_SEARCH = """
+query($q: String!) {
+  search(query: $q, query_type: "Book", per_page: 5) { results }
+}"""
+
+
+def _hardcover_token_refused(why: str) -> None:
+    global HARDCOVER_DISABLED
+    HARDCOVER_DISABLED = True
+    print(f"    [HARDCOVER] Token refused ({why}); skipping Hardcover "
+          f"for the rest of this run", flush=True)
+
+
+def lookup_hardcover(title: str, author: str) -> dict:
+    """Fetch a book's blurb from Hardcover's search API.
+
+    Searches title and first author together: the title alone returns the
+    best-known book of that name, and the indie one is often not in the top
+    five. A hit must pass the same title and author check as every source.
+    """
+    blank = {"Description": "", "Lookup Source": "", "Lookup Error": ""}
+    if HARDCOVER_DISABLED or not HARDCOVER_API_TOKEN or is_vague_author(author):
+        return blank
+    token = HARDCOVER_API_TOKEN
+    if not token.lower().startswith("bearer "):
+        token = "Bearer " + token
+    try:
+        r = requests.post(
+            "https://api.hardcover.app/v1/graphql",
+            json={"query": _HARDCOVER_SEARCH,
+                  "variables": {"q": f"{core_title(title)} {first_author(author)}"}},
+            headers={"authorization": token, "content-type": "application/json",
+                     "user-agent": "book-tools/1.0"},
+            timeout=LOOKUP_TIMEOUT_SECONDS,
+        )
+        if r.status_code in (401, 403):
+            _hardcover_token_refused(f"HTTP {r.status_code}")
+            return blank
+        if r.status_code != 200:
+            return {**blank, "Lookup Error": f"Hardcover HTTP {r.status_code}"}
+        data = r.json()
+        if data.get("errors") and not data.get("data"):
+            message = str(data["errors"][0].get("message", ""))
+            if "token" in message.lower() or "jwt" in message.lower():
+                _hardcover_token_refused(message[:80])
+                return blank
+            return {**blank, "Lookup Error": f"Hardcover error: {message[:80]}"}
+        hits = (((data.get("data") or {}).get("search") or {})
+                .get("results") or {}).get("hits") or []
+        for hit in hits:
+            doc = hit.get("document") or {}
+            if not (title_match(doc.get("title"), title)
+                    and authors_match(doc.get("author_names") or [], author)):
+                continue
+            text = html_module.unescape(clean_text(doc.get("description")))
+            text = re.sub(r"[ \t]+", " ", text)
+            text = re.sub(r"\n\s*\n+", "\n", text).strip()
+            if len(text) > AMAZON_DESCRIPTION_MAX_CHARS:
+                text = text[:AMAZON_DESCRIPTION_MAX_CHARS].rsplit(" ", 1)[0] + "…"
+            if text:
+                return {**blank, "Description": text, "Lookup Source": "Hardcover"}
+    except requests.RequestException as e:
+        return {**blank, "Lookup Error": f"Hardcover unreachable: {type(e).__name__}"}
+    except Exception:
+        pass
+    return blank
+
+
 # Set once Amazon answers with a captcha. Every later request would get the same
 # page and prolong the block, so the rest of the run leaves Amazon alone.
 AMAZON_PAUSED = False
@@ -1604,6 +1686,20 @@ def lookup_book_metadata(title: str, author: str, need_fields=None,
             result["Lookup Error"] = ""
         elif apple["Lookup Error"] and not clean_text(result["Lookup Error"]):
             result["Lookup Error"] = apple["Lookup Error"]
+
+    # Hardcover before Amazon: it never blocks, and every blurb found here is
+    # one of Amazon's daily pages saved.
+    if (not clean_text(result.get("Description")) and wants_description
+            and HARDCOVER_API_TOKEN and not HARDCOVER_DISABLED):
+        time.sleep(HARDCOVER_LOOKUP_SLEEP_SECONDS)
+        hc = lookup_hardcover(title, author)
+        if clean_text(hc["Description"]):
+            result["Description"] = hc["Description"]
+            if not clean_text(result.get("Lookup Source")):
+                result["Lookup Source"] = hc["Lookup Source"]
+            result["Lookup Error"] = ""
+        elif hc["Lookup Error"] and not clean_text(result["Lookup Error"]):
+            result["Lookup Error"] = hc["Lookup Error"]
 
     # Amazon last, and only for the gap the others left: it has a blurb for
     # nearly every row here, but it blocks callers that ask too often.
