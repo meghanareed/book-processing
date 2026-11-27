@@ -1327,12 +1327,26 @@ AMAZON_BLOCKED_PAGE_LIMIT = 3
 _AMAZON_BLOCKED_STREAK = 0
 
 # Set by the caller. AMAZON_DISABLED keeps Amazon out of the whole run.
-# AMAZON_PAGE_BUDGET caps how many Amazon pages the run may open (None = no
-# cap); it is how a daily limit is kept, since a block comes from how many
-# pages are asked for, not from how fast. AMAZON_PAGES_USED counts them.
+#
+# Amazon blocks on how many pages are asked for in a stretch, and lets up after
+# a rest: on Nov 26 a captcha at 9:47 was followed, after two hours off, by
+# about 150 more pages. So pages come in windows: AMAZON_WINDOW_PAGES pages
+# (None = no limit), then AMAZON_REST_SECONDS with Amazon left alone. A block
+# rests it for AMAZON_BLOCK_REST_SECONDS. The caller carries AMAZON_WINDOW_USED
+# and AMAZON_REST_UNTIL (epoch seconds) from one run to the next.
 AMAZON_DISABLED = False
-AMAZON_PAGE_BUDGET = None
-AMAZON_PAGES_USED = 0
+AMAZON_WINDOW_PAGES = None
+AMAZON_REST_SECONDS = 0
+AMAZON_BLOCK_REST_SECONDS = 0
+AMAZON_WINDOW_USED = 0
+AMAZON_REST_UNTIL = 0.0
+AMAZON_LAST_PAGE = 0.0     # when the last page was opened, epoch seconds
+AMAZON_PAGES_USED = 0      # this run only, for the log
+
+
+def _amazon_resting_reason() -> str:
+    return ("Amazon skipped - resting until "
+            + time.strftime("%H:%M", time.localtime(AMAZON_REST_UNTIL)))
 
 
 def amazon_skip_reason() -> str:
@@ -1342,18 +1356,38 @@ def amazon_skip_reason() -> str:
     nothing about the book": the row is neither counted as tried nor as an
     error streak.
     """
+    global AMAZON_REST_UNTIL, AMAZON_WINDOW_USED
     if AMAZON_DISABLED:
         return "Amazon skipped - turned off for this run"
     if AMAZON_PAUSED:
         return "Amazon skipped - it blocked requests earlier in this run"
-    if AMAZON_PAGE_BUDGET is not None and AMAZON_PAGES_USED >= AMAZON_PAGE_BUDGET:
-        return "Amazon skipped - daily page limit reached"
+    if AMAZON_WINDOW_PAGES == 0:
+        return "Amazon skipped - page limit is 0"
+    now = time.time()
+    if AMAZON_REST_UNTIL:
+        if now < AMAZON_REST_UNTIL:
+            return _amazon_resting_reason()
+        AMAZON_REST_UNTIL, AMAZON_WINDOW_USED = 0.0, 0
+    elif (AMAZON_WINDOW_USED and AMAZON_REST_SECONDS > 0 and AMAZON_LAST_PAGE
+          and now - AMAZON_LAST_PAGE >= AMAZON_REST_SECONDS):
+        # Left alone that long already, which is as good as a rest.
+        AMAZON_WINDOW_USED = 0
+    if AMAZON_WINDOW_PAGES is not None and AMAZON_WINDOW_USED >= AMAZON_WINDOW_PAGES:
+        if AMAZON_REST_SECONDS <= 0:
+            return "Amazon skipped - page limit reached"
+        AMAZON_REST_UNTIL = now + AMAZON_REST_SECONDS
+        print(f"    [AMAZON] {AMAZON_WINDOW_USED} pages opened; resting Amazon "
+              f"until {time.strftime('%H:%M', time.localtime(AMAZON_REST_UNTIL))}",
+              flush=True)
+        return _amazon_resting_reason()
     return ""
 
 
 def note_amazon_page() -> None:
-    global AMAZON_PAGES_USED
+    global AMAZON_PAGES_USED, AMAZON_WINDOW_USED, AMAZON_LAST_PAGE
     AMAZON_PAGES_USED += 1
+    AMAZON_WINDOW_USED += 1
+    AMAZON_LAST_PAGE = time.time()
 
 
 # Amazon blurbs run long, and the point is to give the model something to read,
@@ -1639,7 +1673,7 @@ def lookup_book_metadata(title: str, author: str, need_fields=None,
     ASIN that is already in the spreadsheet is a request and a sleep spent
     re-deriving a value we were handed.
     """
-    global AMAZON_PAUSED, _AMAZON_BLOCKED_STREAK
+    global AMAZON_PAUSED, _AMAZON_BLOCKED_STREAK, AMAZON_REST_UNTIL
 
     result = {
         "ISBN_10": "", "ISBN_13": "", "ASIN": "", "Lookup Source": "",
@@ -1726,6 +1760,10 @@ def lookup_book_metadata(title: str, author: str, need_fields=None,
             if ("captcha" in amz["Lookup Error"]
                     or _AMAZON_BLOCKED_STREAK >= AMAZON_BLOCKED_PAGE_LIMIT):
                 AMAZON_PAUSED = True
+                # Rest it beyond this run too, or the next run walks into the
+                # same block.
+                AMAZON_REST_UNTIL = max(AMAZON_REST_UNTIL,
+                                        time.time() + AMAZON_BLOCK_REST_SECONDS)
                 print(f"    [AMAZON] Pausing Amazon for the rest of this run: "
                       f"{amz['Lookup Error']}", flush=True)
         if clean_text(amz.get("Description")):
