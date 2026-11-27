@@ -231,9 +231,17 @@ outage, not the catalogue.
 ### Where descriptions actually come from
 
 Google Books and Open Library are tried first, then **Apple Books** (no key
-needed), then **Amazon**, using the ASIN the row already holds. Amazon has a blurb
-for nearly every row but blocks callers that ask too often, so it is the last
-resort and is asked slowly.
+needed), then **Hardcover**, then **Amazon**, using the ASIN the row already
+holds. Amazon has a blurb for nearly every row but blocks callers that ask too
+often, so it is the last resort and is asked slowly.
+
+Hardcover is a free catalogue with an official API. It needs a token: sign up
+at hardcover.app, copy the token from hardcover.app/account/api, and set
+`books_py.hardcover_api_token` in `launcher_config.json` (or `HARDCOVER_API_TOKEN`
+in the environment). Without one it is skipped. It lists many indie books but
+often without a description, so in testing it filled about 1 in 8 of the books
+that would otherwise need Amazon. A token it refuses turns it off for the rest
+of the run with one message, rather than an error on every row.
 
 A result counts only when its title and author both match the row. A row nothing
 matches is left blank rather than filled with the nearest thing found.
