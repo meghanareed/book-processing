@@ -981,6 +981,13 @@ def _subtitle_words(title) -> set[str]:
     return set(re.findall(r"[a-z]{4,}", subtitle.lower()))
 
 
+def _title_key(title) -> str:
+    # Stores and readers write "&" and "and" interchangeably ("A Touch of Gold &
+    # Madness" is "A Touch of Gold and Madness" on Amazon), so they compare equal.
+    # Only titles: in an author field "&" separates two people.
+    return _match_key(re.sub(r"\s*&\s*", " and ", core_title(title)))
+
+
 def title_match(candidate_title: str, target_title: str) -> bool:
     """True when both are the same book, going by the title before any subtitle.
 
@@ -988,7 +995,7 @@ def title_match(candidate_title: str, target_title: str) -> bool:
     different book.  Also refuses a different volume number, a box set standing
     in for one of its books, and "Series: A" against "Series: B".
     """
-    c, t = _match_key(core_title(candidate_title)), _match_key(core_title(target_title))
+    c, t = _title_key(candidate_title), _title_key(target_title)
     if not c or c != t:
         return False
     if bool(_COLLECTION.search(clean_text(candidate_title))) != bool(
