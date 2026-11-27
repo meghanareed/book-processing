@@ -246,8 +246,19 @@ Amazon is polled one page at a time with a pause between rows, in a headless
 browser that is signed out and keeps nothing between runs. Where Playwright is
 not installed, or another Playwright session is already open, it falls back to a
 plain request. If Amazon serves a captcha the run reports `Amazon served a
-captcha` and leaves Amazon alone from then on; rows that needed it are not
-date-stamped, so a later run retries them.
+captcha` and leaves Amazon alone from then on. Amazon can also block without a
+captcha by serving pages with no product on them (`Amazon blocked: ...`); three
+of those in a row pause Amazon the same way. Rows that needed it are not
+date-stamped, so a later run retries them. When Google's quota error comes
+first, Amazon's reason is still added to the log after a `|`.
+
+Amazon blocks on how many pages are asked for in a day, not just on speed, so
+runs open at most **100 Amazon pages a day** between them. The count is kept in
+`_amazon_pages.json` next to the workbook. Change it with
+`--amazon-pages-per-day N`, or leave Amazon out of a run entirely with
+`--no-amazon`. Rows that only Amazon could have filled are logged as `Amazon
+skipped - ...`. They are not marked as tried and don't count toward the
+25-errors-in-a-row stop, so the next run with Amazon picks them up.
 
 Most ASINs in the sheet were the first result of a title search, and some
 belong to another book in the series or a box set. The product page has to show
