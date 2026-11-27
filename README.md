@@ -260,13 +260,18 @@ of those in a row pause Amazon the same way. Rows that needed it are not
 date-stamped, so a later run retries them. When Google's quota error comes
 first, Amazon's reason is still added to the log after a `|`.
 
-Amazon blocks on how many pages are asked for in a day, not just on speed, so
-runs open at most **100 Amazon pages a day** between them. The count is kept in
-`_amazon_pages.json` next to the workbook. Change it with
-`--amazon-pages-per-day N`, or leave Amazon out of a run entirely with
+Amazon blocks on how many pages come in a stretch, and lets up after a rest.
+So runs open Amazon pages in **windows: 50 pages, then 2.5 hours off**. A
+captcha or a run of blocked pages rests it for twice that (5 hours). The window
+is shared across runs and kept in `_amazon_pages.json` next to the workbook,
+so a run started during a rest leaves Amazon alone until the rest ends. Change
+the window with `--amazon-pages-per-window N` (0 = no Amazon) and the rest with
+`--amazon-rest-hours H`, or leave Amazon out of a run entirely with
 `--no-amazon`. Rows that only Amazon could have filled are logged as `Amazon
 skipped - ...`. They are not marked as tried and don't count toward the
-25-errors-in-a-row stop, so the next run with Amazon picks them up.
+25-errors-in-a-row stop, so the next run with Amazon picks them up. A run
+doesn't wait out a rest; to use several windows a day, start a run every few
+hours.
 
 Most ASINs in the sheet were the first result of a title search, and some
 belong to another book in the series or a box set. The product page has to show
