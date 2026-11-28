@@ -1409,7 +1409,9 @@ def amazon_skip_reason() -> str:
     if AMAZON_WINDOW_PAGES is not None and AMAZON_WINDOW_USED >= AMAZON_WINDOW_PAGES:
         if AMAZON_REST_SECONDS <= 0:
             return "Amazon skipped - page limit reached"
-        AMAZON_REST_UNTIL = now + AMAZON_REST_SECONDS
+        # The rest runs from the last page opened, not from whenever Amazon is
+        # next asked: a run that fills the window may not ask again for hours.
+        AMAZON_REST_UNTIL = (AMAZON_LAST_PAGE or now) + AMAZON_REST_SECONDS
         print(f"    [AMAZON] {AMAZON_WINDOW_USED} pages opened; resting Amazon "
               f"until {time.strftime('%H:%M', time.localtime(AMAZON_REST_UNTIL))}",
               flush=True)
@@ -1698,7 +1700,7 @@ AI_FILLABLE_FIELDS = ("Genre", "AgeRange", "Tropes", "Triggers", "Spice Tags")
 
 
 def lookup_book_metadata(title: str, author: str, need_fields=None,
-                         known_asin: str = "") -> dict:
+                         known_asin: str = "", free_sources: bool = True) -> dict:
     """Look a book up across Google Books, Open Library, Amazon and the AI.
 
     need_fields is the set of fields the caller still needs; passing it lets the
@@ -1709,6 +1711,10 @@ def lookup_book_metadata(title: str, author: str, need_fields=None,
     known_asin is the ASIN the caller already holds. Searching Amazon for an
     ASIN that is already in the spreadsheet is a request and a sleep spent
     re-deriving a value we were handed.
+
+    free_sources=False goes straight to Amazon, for a book Google, Open Library,
+    Apple and Hardcover were asked about recently and had no blurb for. Asking
+    them again spends Google's daily quota on an answer we already have.
     """
     global AMAZON_PAUSED, _AMAZON_BLOCKED_STREAK, AMAZON_REST_UNTIL
 
@@ -1718,7 +1724,7 @@ def lookup_book_metadata(title: str, author: str, need_fields=None,
         "Tropes": "", "Triggers": "", "Spice Tags": "", "Lookup Error": ""
     }
 
-    google_result = lookup_google_books(title, author)
+    google_result = lookup_google_books(title, author) if free_sources else _empty_lookup()
     # With no author this matched on the title alone, and "Carnage" or "Groupie"
     # is the name of several books. A blurb for the wrong one reads just as well
     # as the right one, so the row goes without until it has an author.
@@ -1729,7 +1735,7 @@ def lookup_book_metadata(title: str, author: str, need_fields=None,
     if any(clean_text(google_result.get(k)) for k in ["ISBN_10", "ISBN_13", "Description", "Genre", "PageCount", "AgeRange"]):
         result.update(google_result)
 
-    if not clean_text(result["ISBN_10"]) and not clean_text(result["ISBN_13"]) and not clean_text(result["Description"]) and not clean_text(result["Genre"]):
+    if free_sources and not clean_text(result["ISBN_10"]) and not clean_text(result["ISBN_13"]) and not clean_text(result["Description"]) and not clean_text(result["Genre"]):
         time.sleep(LOOKUP_SLEEP_SECONDS)
         openlib_result = lookup_open_library(title, author)
         if not looks_english(openlib_result.get("Description")):
@@ -1755,7 +1761,7 @@ def lookup_book_metadata(title: str, author: str, need_fields=None,
         need_fields is None or "Description" in need_fields
         or any(f in need_fields for f in AI_FILLABLE_FIELDS))
 
-    if not clean_text(result.get("Description")) and wants_description:
+    if free_sources and not clean_text(result.get("Description")) and wants_description:
         time.sleep(APPLE_LOOKUP_SLEEP_SECONDS)
         apple = lookup_apple_books(title, author)
         if clean_text(apple["Description"]):
@@ -1769,7 +1775,7 @@ def lookup_book_metadata(title: str, author: str, need_fields=None,
 
     # Hardcover before Amazon: it never blocks, and every blurb found here is
     # one of Amazon's daily pages saved.
-    if (not clean_text(result.get("Description")) and wants_description
+    if (free_sources and not clean_text(result.get("Description")) and wants_description
             and HARDCOVER_API_TOKEN and not HARDCOVER_DISABLED):
         time.sleep(HARDCOVER_LOOKUP_SLEEP_SECONDS)
         hc = lookup_hardcover(title, author)

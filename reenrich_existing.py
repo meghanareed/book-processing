@@ -336,6 +336,11 @@ def load_amazon_state() -> tuple[int, float, float]:
 
 def save_amazon_usage() -> None:
     tmp = AMAZON_USAGE_PATH.with_suffix(".tmp")
+    if (books.AMAZON_WINDOW_PAGES and not books.AMAZON_REST_UNTIL
+            and books.AMAZON_WINDOW_USED >= books.AMAZON_WINDOW_PAGES):
+        # Filled on the run's last Amazon book: start the rest now, so the file
+        # says when it ends.
+        books.amazon_skip_reason()
     try:
         tmp.write_text(json.dumps({
             "window_used": books.AMAZON_WINDOW_USED,
@@ -374,6 +379,16 @@ def save_attempts(attempts: dict) -> None:
         tmp.replace(ATTEMPTS_PATH)
     except Exception as e:
         log(f"[WARN] Could not save {ATTEMPTS_PATH.name}: {e}")
+
+
+def free_sources_key(row: pd.Series, missing_field: str | None) -> str:
+    """Where to note that Google, Open Library, Apple and Hardcover had nothing.
+
+    Kept apart from the attempt itself: such a book has not been tried, since
+    Amazon was not asked, but asking the free sources again within the week
+    spends Google's daily quota on an answer we already have.
+    """
+    return "free sources empty|" + attempt_key(row, missing_field)
 
 
 def attempted_recently(attempts: dict, key: str, days: int) -> bool:
@@ -823,6 +838,39 @@ def _run(args, missing_field: str | None) -> None:
         log(f"Skipped (no author): {skipped_by_kind['no author']} — add an author to get a description")
     log(f"Will process      : {len(eligible_indices)}")
 
+    # Books the free sources had nothing for this week can only be filled by
+    # Amazon. Re-asking the free sources each run spent the run, and Google's
+    # quota, on the same books from the front of the sheet. So they go first
+    # while Amazon has pages left in its window, straight to Amazon, and wait
+    # otherwise; the rest of the run goes to books not yet looked at.
+    amazon_only: set = set()
+    if missing_field == "Description" and args.retry_after_days > 0:
+        waiting = [i for i in eligible_indices if attempted_recently(
+            attempts, free_sources_key(df.loc[i], missing_field), args.retry_after_days)]
+        if waiting:
+            if books.amazon_skip_reason():
+                left = 0
+            elif books.AMAZON_WINDOW_PAGES is None:
+                left = len(waiting) * 3
+            else:
+                left = max(0, books.AMAZON_WINDOW_PAGES - books.AMAZON_WINDOW_USED)
+            first = []
+            for i in waiting:
+                # The description page, plus a search when there is no ASIN and
+                # a page-count page when that is missing too.
+                cost = (1 + (not clean_text(df.at[i, "ASIN"] if "ASIN" in df.columns else ""))
+                        + needs_work(df.loc[i], "PageCount"))
+                if cost <= left:
+                    first.append(i)
+                    left -= cost
+            held = set(waiting) - set(first)
+            eligible_indices = first + [i for i in eligible_indices
+                                        if i not in held and i not in set(first)]
+            amazon_only = set(first)
+            log(f"Amazon only       : {len(first)} (free sources had nothing this week)")
+            if held:
+                log(f"Waiting for Amazon: {len(held)} (left for a run with Amazon pages free)")
+
     if args.limit:
         eligible_indices = eligible_indices[: args.limit]
         log(f"Limited to        : {len(eligible_indices)} (--limit {args.limit})")
@@ -884,6 +932,7 @@ def _run(args, missing_field: str | None) -> None:
                     title, author,
                     need_fields=set(missing_now),
                     known_asin=clean_text(row.get("ASIN", "")),
+                    free_sources=idx not in amazon_only,
                 )
 
             # If Google Books/OpenLibrary found nothing for PageCount but we have
@@ -909,6 +958,12 @@ def _run(args, missing_field: str | None) -> None:
             # book and must not hide it.
             if not lookup_failed or lookup_error.startswith("Amazon page for"):
                 attempts[attempt_key(row, missing_field)] = datetime.date.today().isoformat()
+            # The error starts "Amazon skipped" only when every free source
+            # answered and none had a blurb. A quota or an outage comes first
+            # in the error, so a book is never parked on an answer we did not get.
+            if (missing_field == "Description" and idx not in amazon_only
+                    and lookup_error.startswith("Amazon skipped")):
+                attempts[free_sources_key(row, missing_field)] = datetime.date.today().isoformat()
             if lookup_failed:
                 lookup_errors += 1
                 # Once Amazon is paused the other sources still work, so a row
