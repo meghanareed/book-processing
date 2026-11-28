@@ -235,6 +235,11 @@ needed), then **Hardcover**, then **Amazon**, using the ASIN the row already
 holds. Amazon has a blurb for nearly every row but blocks callers that ask too
 often, so it is the last resort and is asked slowly.
 
+Only English blurbs are kept. Apple and Google list translations under the
+original title and author, so a German, Dutch or Italian edition passes every
+title and author check; a blurb whose common words are mostly foreign is
+skipped and the next match, or the next source, is tried instead.
+
 Hardcover is a free catalogue with an official API. It needs a token: sign up
 at hardcover.app, copy the token from hardcover.app/account/api, and set
 `books_py.hardcover_api_token` in `launcher_config.json` (or `HARDCOVER_API_TOKEN`

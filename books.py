@@ -1018,6 +1018,40 @@ def title_match(candidate_title: str, target_title: str) -> bool:
     return not (cw and tw) or bool(cw & tw)
 
 
+# Common short words, for telling an English blurb from a foreign edition's.
+# Apple and Google list translations under the original title and author, so
+# a German or Dutch blurb passes every title and author check.
+_ENGLISH_WORDS = set(
+    "the and of to a in is you i her his she he my for with that it but was "
+    "on be as are they me him have this not at from by what when who will "
+    "their one all your can has into an we them".split())
+# Only words that are not also English, so a name or a loanword cannot tip it.
+_FOREIGN_WORDS = set(
+    "der die das und ist nicht ich sie er ein eine mit auf sich den dem "
+    "het een van ik je zijn niet maar dat wat voor "
+    "il che di non della per una sono gli lei lui nel con "
+    "le les et est une des dans pas qui sur pour elle "
+    "el los las que y por para su lo del se "
+    "och att \u00e4r som p\u00e5 inte jag "
+    "yang dan untuk dengan itu ini tidak dia aku".split())
+
+
+def looks_english(text) -> bool:
+    """False for a blurb that is plainly in another language.
+
+    Leans towards yes: a short English line ("A medium-burn romantic suspense
+    set in small-town USA.") has few common words, so a blurb is refused only
+    when foreign words outnumber English ones, or when a long one has hardly
+    any English at all.
+    """
+    words = re.findall(r"[a-z\u00e0-\u00ff']+", clean_text(text).lower()[:800])
+    en = sum(w in _ENGLISH_WORDS for w in words)
+    fx = sum(w in _FOREIGN_WORDS for w in words)
+    if fx >= 2 and en < 2 * fx:
+        return False
+    return not (len(words) >= 25 and en < 3)
+
+
 def _empty_lookup() -> dict:
     return {
         "ISBN_10": "", "ISBN_13": "", "ASIN": "", "Lookup Source": "",
@@ -1235,7 +1269,7 @@ def lookup_apple_books(title: str, author: str) -> dict:
             text = re.sub(r"\n\s*\n+", "\n", text).strip()
             if len(text) > AMAZON_DESCRIPTION_MAX_CHARS:
                 text = text[:AMAZON_DESCRIPTION_MAX_CHARS].rsplit(" ", 1)[0] + "…"
-            if text:
+            if text and looks_english(text):
                 return {**blank, "Description": text, "Lookup Source": "Apple Books"}
     except requests.RequestException as e:
         return {**blank, "Lookup Error": f"Apple Books unreachable: {type(e).__name__}"}
@@ -1307,7 +1341,7 @@ def lookup_hardcover(title: str, author: str) -> dict:
             text = re.sub(r"\n\s*\n+", "\n", text).strip()
             if len(text) > AMAZON_DESCRIPTION_MAX_CHARS:
                 text = text[:AMAZON_DESCRIPTION_MAX_CHARS].rsplit(" ", 1)[0] + "…"
-            if text:
+            if text and looks_english(text):
                 return {**blank, "Description": text, "Lookup Source": "Hardcover"}
     except requests.RequestException as e:
         return {**blank, "Lookup Error": f"Hardcover unreachable: {type(e).__name__}"}
@@ -1549,6 +1583,9 @@ def lookup_amazon_description(asin: str, title: str = "", author: str = "") -> d
 
         if not text:
             return {"Description": "", "Lookup Source": "", "Lookup Error": ""}
+        if not looks_english(text):
+            return {"Description": "", "Lookup Source": "",
+                    "Lookup Error": f"Amazon page for {asin} has a blurb that is not in English"}
         return {"Description": text,
                 "Lookup Source": "Amazon product page",
                 "Lookup Error": ""}
@@ -1685,7 +1722,7 @@ def lookup_book_metadata(title: str, author: str, need_fields=None,
     # With no author this matched on the title alone, and "Carnage" or "Groupie"
     # is the name of several books. A blurb for the wrong one reads just as well
     # as the right one, so the row goes without until it has an author.
-    if is_vague_author(author):
+    if is_vague_author(author) or not looks_english(google_result.get("Description")):
         google_result["Description"] = ""
     if google_result.get("Lookup Error"):
         result["Lookup Error"] = google_result["Lookup Error"]
@@ -1695,6 +1732,8 @@ def lookup_book_metadata(title: str, author: str, need_fields=None,
     if not clean_text(result["ISBN_10"]) and not clean_text(result["ISBN_13"]) and not clean_text(result["Description"]) and not clean_text(result["Genre"]):
         time.sleep(LOOKUP_SLEEP_SECONDS)
         openlib_result = lookup_open_library(title, author)
+        if not looks_english(openlib_result.get("Description")):
+            openlib_result["Description"] = ""
         if openlib_result.get("Lookup Error") and not result["Lookup Error"]:
             result["Lookup Error"] = openlib_result["Lookup Error"]
         result.update({k: v for k, v in openlib_result.items()
